@@ -1,0 +1,18 @@
+{
+  "logging": {
+    "level_console": "INFO",
+    "level_file": "DEBUG",
+    "file_path": "logs/conversor-fcf.log",
+    "max_bytes": 10485760,
+    "backup_count": 5
+  },
+  "output": {
+    "directory": "output/decomp_fcf",
+    "eco_subdirectory": "eco",
+    "content_subdirectory": "content"
+  },
+  "conversion": {
+    "hydro_codes_path": "decomp_hydro_codes.json",
+    "include_terminal_pool": false
+  }
+}

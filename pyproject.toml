@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "conversor-fcf"
-version = "0.1.0"
+# Single version authority is conversor_fcf.__version__, resolved below by
+# [tool.setuptools.dynamic]; RunManifest.tool_version cannot drift from the
+# installed distribution version.
+dynamic = ["version"]
 description = "Converts a Cobre case (JSON inputs plus FlatBuffers policy checkpoint) into DECOMP-format mapcut and cortdeco files."
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -23,22 +26,37 @@ dependencies = [
 test = [
     "idecomp>=1.14.2",
     "pytest>=8.0",
+    "pytest-cov>=5",
 ]
 dev = [
     "mypy>=1.11",
     "ruff>=0.6",
 ]
 
+[project.scripts]
+conversor-fcf = "conversor_fcf.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "conversor_fcf.__version__" }
+
+[tool.setuptools.package-data]
+conversor_fcf = ["py.typed"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Generated FlatBuffers readers are vendored verbatim and must never be edited to
+# satisfy a linter. Both paths are listed so the exclusion survives ticket-003's
+# relocation of the tree under src/.
+extend-exclude = ["Cobre", "src/Cobre"]
 
 [tool.mypy]
 strict = true
 python_version = "3.12"
+exclude = "^(src/)?Cobre/"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
