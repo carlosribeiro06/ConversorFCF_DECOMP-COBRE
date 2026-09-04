@@ -1,0 +1,44 @@
+# --- Planning and specification artifacts (local only, never versioned) ---
+plans/
+conversor-fcf.md
+.implementation-state.json
+.project-journey.json
+
+# --- Local agent configuration ---
+.claude/settings.local.json
+
+# --- Python bytecode ---
+# Note: keeps the vendored Cobre/**/*.py sources tracked; only bytecode is ignored.
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Packaging / build ---
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Tooling caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Runtime logs (audit logs are written outside the repo by default) ---
+logs/
+*.log
+
+# --- Editor / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
