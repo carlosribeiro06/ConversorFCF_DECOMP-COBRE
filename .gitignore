@@ -1,5 +1,6 @@
 # --- Planning and specification artifacts (local only, never versioned) ---
 plans/
+plans-lite/
 conversor-fcf.md
 .implementation-state.json
 .project-journey.json
@@ -31,6 +32,15 @@ env/
 .coverage
 coverage.xml
 htmlcov/
+
+# --- Converter output artifacts ---
+# Generated mapcut/cortdeco binaries and the readable CSV mirrors. The CLI writes
+# to <case>/output/decomp_fcf/ by default, outside this repository; these patterns
+# only guard against in-repo test runs.
+mapcut.rv*
+cortdeco.rv*
+output/
+*.csv.gz
 
 # --- Runtime logs (audit logs are written outside the repo by default) ---
 logs/

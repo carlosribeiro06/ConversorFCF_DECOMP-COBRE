@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "conversor-fcf"
+version = "0.1.0"
+description = "Converts a Cobre case (JSON inputs plus FlatBuffers policy checkpoint) into DECOMP-format mapcut and cortdeco files."
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "carlosribeiro06", email = "carlosribeiro121201@gmail.com" }]
+# Deliberately excludes pyarrow and polars: the converter never reads Cobre Parquet
+# artifacts (see master plan Key Design Decision 5). Do not reintroduce them here.
+dependencies = [
+    "flatbuffers>=25.12",
+    "numpy>=2.5",
+    "pandas>=3.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+# idecomp is a test-only read-back oracle; it must never be a runtime dependency.
+test = [
+    "idecomp>=1.14.2",
+    "pytest>=8.0",
+]
+dev = [
+    "mypy>=1.11",
+    "ruff>=0.6",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
