@@ -38,8 +38,8 @@ _P7 = (
 )
 _P8 = "P8: inflow-lag coefficients dropped with a counted audit report, never a silent truncation"
 _P9 = (
-    "P9: discount rate duration-proportional (1+r)^(-days/365); diverges from the "
-    "reference deck's constant per-stage ratio for mixed-duration stages"
+    "P9: discount rate duration-proportional (1+r)^(-cumulative_days/365.25); the day-count "
+    "basis is 365.25, solved from the reference series and exact to 3.7e-13, not 365"
 )
 _P10 = (
     "P10: all populated cuts emitted; is_active and active_cut_indices recorded as ECO "
