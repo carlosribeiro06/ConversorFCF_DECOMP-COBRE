@@ -45,6 +45,23 @@ and do not "fix" code that looks wrong because it contradicts an intuition liste
   needs `.view(np.int32)`.
 - Cost units: `Cobre = DECOMP x 1000` (DECOMP works in 10^3 R$), verified to 1 ulp on a matched
   pair.
+- The discount day-count basis is **365.25**, not 365. Solving the basis from the reference series'
+  per-stage ratio `0.997830417741` yields exactly 365.250000, and
+  `(1+r)^(-cumulative_days/365.25)` reproduces all seven reference factors to 3.7e-13. With 365 the
+  error reaches 9e-6. Cumulative days to the start of stage `k` is `7k` in this deck, so stage 6's
+  600-hour span never enters its own factor: the basis was the whole discrepancy.
+- The anticipated-thermal (GNL) slots are a **rotating ring buffer**. `subindex` is the physical ring
+  position and `delivery_date` is its meaning, and the ring rotates between stages: pool 0 maps
+  subindex 0 to 2026-04-01 and 1-5 to 2026-05-01, while pool 5 maps 0-4 to 2026-07-01 and 5 to
+  2026-05-01. Keying a DECOMP stage axis off `subindex` scrambles it differently in every stage; key
+  off `delivery_date`.
+- Load-block hours differ **per stage**, not just in total. Stage 0 is 24/65/79, stages 1-4 are
+  15/64/89, stage 5 is 12/61/95 and stage 6 is 51/226/323 (600 h, against 168 h elsewhere). The
+  frequently repeated "24/65/79" is stage 0's split alone.
+- Cobre GNL coefficients span seven orders of magnitude (`-548523.58` to `-0.0888`, with structural
+  zeros), while the oracle's `pi_gnl` spans a 15% band. No scalar or affine map connects them, and
+  the two artifacts come from independent runs, so their magnitudes say nothing about the unit
+  convention. Never gate a validation check on cross-run GNL magnitude agreement.
 
 ## Git conventions
 

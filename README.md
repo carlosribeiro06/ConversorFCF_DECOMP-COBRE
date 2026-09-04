@@ -60,7 +60,8 @@ a missing or mistyped key stops the run with a message naming the offending dott
 | `src/conversor_fcf/mapping/` | Cobre-to-DECOMP mapping rules (codes, units, signs, submarkets) |
 | `src/conversor_fcf/decomp/` | Native `mapcut` / `cortdeco` serializers |
 | `src/conversor_fcf/reporting/` | ECO and content CSV emitters |
-| `Cobre/` | Vendored generated FlatBuffers readers, verbatim and not linted |
+| `src/Cobre/` | Vendored generated FlatBuffers readers, verbatim and not linted |
+| `src/Cobre/PROVENANCE.md` | Upstream schema, namespace, file identifier and the 12 module digests |
 
 ## Logs and auditing
 
@@ -84,7 +85,7 @@ code and prose cannot drift.
 ```
 
 All four are expected to be clean on a fresh checkout. The vendored FlatBuffers readers under
-`Cobre/` are generated code: they are excluded from `ruff` and `mypy` rather than edited to satisfy
+`src/Cobre/` are generated code: they are excluded from `ruff` and `mypy` rather than edited to satisfy
 them.
 
 Git conventions: work on a feature branch, never commit to `main`, never force-push, and **confirm

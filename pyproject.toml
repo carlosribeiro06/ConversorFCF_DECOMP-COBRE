@@ -58,5 +58,13 @@ strict = true
 python_version = "3.12"
 exclude = "^(src/)?Cobre/"
 
+[[tool.mypy.overrides]]
+# Generated FlatBuffers readers: unannotated by construction and excluded from
+# checking, so they are treated as untyped rather than annotated in place.
+module = ["Cobre.*", "flatbuffers.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: reads the 177 MB terminal-pool checkpoint"]

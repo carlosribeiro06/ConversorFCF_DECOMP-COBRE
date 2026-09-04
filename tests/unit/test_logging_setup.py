@@ -20,6 +20,8 @@ def _detach_handlers() -> Iterator[None]:
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
         handler.close()
+    logger.propagate = True
+    logger.setLevel(logging.NOTSET)
 
 
 def _settings(tmp_path: Path, console: str = "INFO", file: str = "DEBUG") -> LoggingSettings:
