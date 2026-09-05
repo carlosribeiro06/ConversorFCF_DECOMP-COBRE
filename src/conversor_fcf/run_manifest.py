@@ -1,6 +1,6 @@
 """Run manifest: the record of which premise set and inputs produced an output pair.
 
-`PREMISES` is the single source of truth for the ten v1 premises. Documentation
+`PREMISES` is the single source of truth for the v1 premises. Documentation
 quotes it rather than restating it, so code and prose cannot drift apart.
 """
 
@@ -45,8 +45,25 @@ _P10 = (
     "P10: all populated cuts emitted; is_active and active_cut_indices recorded as ECO "
     "columns, not used as filters"
 )
+_P11 = (
+    "P11: mapcut reg 10 emits zeros for parcela_custo_geracao_termica_minima, "
+    "parcela_custo_contrato_importacao_minimo, parcela_custo_contrato_exportacao_minimo, "
+    "geracao_termica_minima_sinalizada_gnl and geracao_termica_minima_gerada_gnl; "
+    "they are DECOMP operational quantities from the deck's own data, non-zero in the reference, "
+    "and are not derivable from a Cobre policy checkpoint, whose cut intercept already embeds "
+    "the constant term. Only taxa_desconto is filled."
+)
 
-PREMISES: tuple[str, ...] = (_P1, _P2, _P3, _P4, _P5, _P6, _P7, _P8, _P9, _P10)
+_P12 = (
+    "P12: mapcut reg 9's trailing float64 block emitted as zeros. The reference populates it with "
+    "the GNL lag month's hours split across load blocks, three values per submarket summing to "
+    "730.5 = 365.25*24/12, one average month on the same day-count basis as P9. It is not "
+    "reproduced here because the block's axis is not settled: the populated width is ngnl*npat, "
+    "while idecomp's own reader consumes ngnl*n_estagios, and the two disagree. Emitting a "
+    "plausible but wrongly-shaped hour vector would be worse than emitting none."
+)
+
+PREMISES: tuple[str, ...] = (_P1, _P2, _P3, _P4, _P5, _P6, _P7, _P8, _P9, _P10, _P11, _P12)
 
 _TRACKED_LIBRARIES = ("numpy", "pandas", "flatbuffers")
 

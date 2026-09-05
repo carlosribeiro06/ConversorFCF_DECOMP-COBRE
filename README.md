@@ -72,7 +72,7 @@ a given run.
 
 ## Known premises and limitations
 
-Pending `ticket-014`, which documents the ten v1 premises by quoting `run_manifest.PREMISES` so
+Pending `ticket-014`, which documents the v1 premises by quoting `run_manifest.PREMISES` so
 code and prose cannot drift.
 
 ## Development

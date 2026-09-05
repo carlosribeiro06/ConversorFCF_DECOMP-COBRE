@@ -42,17 +42,39 @@ def _manifest_payload(tmp_path: Path) -> dict[str, object]:
     return parsed
 
 
-def test_premises_hold_exactly_ten_entries() -> None:
-    assert len(PREMISES) == 10
-    assert [entry.split(":", 1)[0] for entry in PREMISES] == [f"P{n}" for n in range(1, 11)]
+def test_premises_are_numbered_contiguously_from_one() -> None:
+    assert len(PREMISES) == 12
+    assert [entry.split(":", 1)[0] for entry in PREMISES] == [f"P{n}" for n in range(1, 13)]
+
+
+def test_premise_eleven_names_every_zero_filled_reg_ten_field() -> None:
+    """A count is not a name: an auditor must be able to see which fields are zero."""
+    p11 = next(entry for entry in PREMISES if entry.startswith("P11:"))
+    for field in (
+        "parcela_custo_geracao_termica_minima",
+        "parcela_custo_contrato_importacao_minimo",
+        "parcela_custo_contrato_exportacao_minimo",
+        "geracao_termica_minima_sinalizada_gnl",
+        "geracao_termica_minima_gerada_gnl",
+    ):
+        assert field in p11, field
+    assert "taxa_desconto" in p11
+
+
+def test_premise_twelve_states_why_reg_nine_is_not_populated() -> None:
+    """An unsettled axis is the reason, so the premise must say which two readings."""
+    p12 = next(entry for entry in PREMISES if entry.startswith("P12:"))
+    assert "730.5" in p12, "the reference's own per-submarket total anchors the claim"
+    assert "ngnl*npat" in p12
+    assert "ngnl*n_estagios" in p12, "both candidate axes must be named, not just the chosen one"
 
 
 def test_manifest_has_all_eight_top_level_keys(tmp_path: Path) -> None:
     assert set(_manifest_payload(tmp_path)) == EXPECTED_KEYS
 
 
-def test_manifest_records_the_ten_premises(tmp_path: Path) -> None:
-    assert len(_manifest_payload(tmp_path)["premises"]) == 10  # type: ignore[arg-type]
+def test_manifest_records_every_premise(tmp_path: Path) -> None:
+    assert len(_manifest_payload(tmp_path)["premises"]) == len(PREMISES)  # type: ignore[arg-type]
 
 
 def test_manifest_records_tracked_library_versions(tmp_path: Path) -> None:

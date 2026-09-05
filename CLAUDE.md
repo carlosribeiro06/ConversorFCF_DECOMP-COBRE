@@ -37,12 +37,41 @@ and do not "fix" code that looks wrong because it contradicts an intuition liste
 - `EntitySlot.subindex` is **0-based** for `AnticipatedThermalState` ring slots.
 - In `mapcut`, reg 9 is written once per **node** (273 in the reference deck) while reg 10 is
   written once per **stage** (7); the two interleave only across the first seven pairs.
+- Reg 9's trailing float64 block, at offset 28, is **populated in the reference and its axis is not
+  settled**. The reference holds `ngnl*npat` values — the GNL lag month's hours per load block,
+  three per submarket summing to exactly 730.5 = `365.25*24/12`, the same day-count basis as the
+  discount series — with its first zero at index `ngnl*npat`. But `idecomp`'s `__le_nono_registro`
+  consumes `ngnl*n_estagios` while its own `dados_gnl` strides by `sum(patamares)`; the reader
+  contradicts itself and the file agrees with the block half. This project emits zeros there under
+  premise P12. Do not populate it without settling the axis: a stage-indexed vector laid into a
+  block-indexed slot produces a wrong file that still reads cleanly. Note that examining only
+  offsets 0-28 makes the block look absent — the int32 head read as float64 yields denormals around
+  6.4e-314, which is not the block.
 - `NCOEF` must be computed from the formula
   `1 + n_uhes + n_utv * max_lag + n_sbm_gnl * n_estagios * n_patamares`, never inferred from the
   last non-zero coefficient — the GNL block is dimensioned by stage count but only lag 1 is
   populated.
 - `codigos_uhes_jusante` is `int32` on disk but `idecomp` reads it as `float32`; a read-back oracle
   needs `.view(np.int32)`.
+- `codigos_submercados_gnl` is `int32` on disk too, despite `idecomp` surfacing `[1.0, 3.0]`. A
+  byte-level read of reg 9 shows the clean triple as int32 and denormals around 6.4e-314 as float64;
+  the float appearance is `dados_gnl`'s stride bug upcasting the column during `pd.concat`. Reg 4 is
+  the genuine on-disk-versus-read-type quirk, not this one.
+- `numero_cortes = numero_iteracoes × n_cut_building_nodes` (the reference: 438 = 73 × 6), and
+  `mapcut` reg 1's cut heads descend as `head(j) = numero_cortes - j`, 1-based, zero for every
+  non-cut-building node (the reference: `[438, 437, 436, 435, 434, 433]`).
+- `cortdeco`'s chain pointer at offset 0 is **1-based**, points to the same node's previous cut with
+  a stride equal to the number of cut-building nodes, and 0 terminates. In the reference, exactly 6
+  of 439 records carry 0 and the other 433 all sit at `own_1based - 6`, with no exceptions.
+- `n_records = numero_cortes + 1`. That extra record is the **last** one and is **not** a
+  terminator: its pointer is the last cut-building node's head, so it is the next backward-pass cut
+  (iteration 74 in the reference), written but not yet exposed in the head table. Nothing points to
+  it, because chains only step backwards from the six heads.
+- The `pi_gnl` block is submarket-major:
+  `1 + n_uhes + n_utv*max_lag + sbm*(n_estagios*n_patamares) + stage*n_patamares + block`. Only
+  stage 0 is ever populated, so the reference fills positions 176-178 and 197-199 and nothing
+  between — which is why its last non-zero coefficient sits at 199 against a declared `NCOEF` of
+  218.
 - Cost units: `Cobre = DECOMP x 1000` (DECOMP works in 10^3 R$), verified to 1 ulp on a matched
   pair.
 - The discount day-count basis is **365.25**, not 365. Solving the basis from the reference series'
