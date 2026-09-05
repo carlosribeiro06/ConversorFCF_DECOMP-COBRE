@@ -43,8 +43,8 @@ def _manifest_payload(tmp_path: Path) -> dict[str, object]:
 
 
 def test_premises_are_numbered_contiguously_from_one() -> None:
-    assert len(PREMISES) == 12
-    assert [entry.split(":", 1)[0] for entry in PREMISES] == [f"P{n}" for n in range(1, 13)]
+    assert len(PREMISES) == 13
+    assert [entry.split(":", 1)[0] for entry in PREMISES] == [f"P{n}" for n in range(1, 14)]
 
 
 def test_premise_eleven_names_every_zero_filled_reg_ten_field() -> None:
@@ -62,11 +62,26 @@ def test_premise_eleven_names_every_zero_filled_reg_ten_field() -> None:
 
 
 def test_premise_twelve_states_why_reg_nine_is_not_populated() -> None:
-    """An unsettled axis is the reason, so the premise must say which two readings."""
+    """Two reasons, and the decisive one is that the values are not derivable at all.
+
+    A reader who sees only the axis ambiguity would conclude that settling the axis
+    unblocks the block. It does not: the split belongs to the DECOMP deck.
+    """
     p12 = next(entry for entry in PREMISES if entry.startswith("P12:"))
     assert "730.5" in p12, "the reference's own per-submarket total anchors the claim"
+    assert "not derivable" in p12, "the decisive reason must be stated"
+    assert "monthly" in p12 and "weekly" in p12, "the mismatch that makes it non-derivable"
     assert "ngnl*npat" in p12
     assert "ngnl*n_estagios" in p12, "both candidate axes must be named, not just the chosen one"
+
+
+def test_premise_five_does_not_present_one_stage_as_the_whole_study() -> None:
+    """24/65/79 is stage 0's split alone; naming it bare misled a ticket once already."""
+    p5 = next(entry for entry in PREMISES if entry.startswith("P5:"))
+    assert "per-stage" in p5
+    for split in ("24/65/79", "15/64/89", "12/61/95", "51/226/323"):
+        assert split in p5, f"the premise must name {split}"
+    assert "600" in p5, "stage 6 spans 600 hours, not 168"
 
 
 def test_manifest_has_all_eight_top_level_keys(tmp_path: Path) -> None:

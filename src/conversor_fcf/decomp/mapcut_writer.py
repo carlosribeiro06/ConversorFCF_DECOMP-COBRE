@@ -309,9 +309,11 @@ def write_mapcut(header: MapcutHeader, path: Path) -> int:
     _logger.warning(
         "premise P12: reg 9's trailing float64 block emitted as zeros. The reference populates it "
         "with the GNL lag month's hours per load block, three values per submarket summing to "
-        "730.5 = 365.25*24/12, but its axis is unsettled: the populated width is ngnl*npat while "
-        "idecomp's reader consumes ngnl*n_estagios. A wrongly-shaped hour vector would be worse "
-        "than none"
+        "730.5 = 365.25*24/12. Those values are not derivable from a Cobre case: the split is a "
+        "monthly structure from the DECOMP deck, while Cobre supplies weekly stage blocks, and no "
+        "aggregation of this case's blocks reproduces it. The block's axis is unsettled too "
+        "(ngnl*npat on disk against idecomp's ngnl*n_estagios), so a wrongly-shaped hour vector "
+        "would be worse than none"
     )
     _logger.info(
         "wrote mapcut %s records=%d bytes=%d numero_cortes=%d numero_cenarios=%d",

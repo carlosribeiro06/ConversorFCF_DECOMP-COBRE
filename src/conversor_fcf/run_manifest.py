@@ -30,7 +30,11 @@ _P4 = (
     "P4: GNL coefficients negated (Cobre negative, DECOMP positive), isolated in one "
     "named, tested, documented function"
 )
-_P5 = "P5: GNL disaggregated across the 3 load blocks weighted by hours (24 / 65 / 79, non-uniform)"
+_P5 = (
+    "P5: GNL disaggregated across the 3 load blocks weighted by each stage's own hours. The "
+    "weights are per-stage, not one triple for the study: stage 0 is 24/65/79, stages 1-4 are "
+    "15/64/89, stage 5 is 12/61/95 and stage 6 is 51/226/323 over 600 hours rather than 168"
+)
 _P6 = "P6: submarket = bus_id + 1; bus 5 (IV) excluded; n_submercados = 5"
 _P7 = (
     "P7: only trunk pools 0-5 converted; pool 6 (267-node terminal fan, 10 000 "
@@ -57,13 +61,39 @@ _P11 = (
 _P12 = (
     "P12: mapcut reg 9's trailing float64 block emitted as zeros. The reference populates it with "
     "the GNL lag month's hours split across load blocks, three values per submarket summing to "
-    "730.5 = 365.25*24/12, one average month on the same day-count basis as P9. It is not "
-    "reproduced here because the block's axis is not settled: the populated width is ngnl*npat, "
-    "while idecomp's own reader consumes ngnl*n_estagios, and the two disagree. Emitting a "
-    "plausible but wrongly-shaped hour vector would be worse than emitting none."
+    "730.5 = 365.25*24/12, one average month on the same day-count basis as P9. Two independent "
+    "reasons, the first decisive: the values are not derivable from a Cobre case, because that "
+    "split is a monthly load-block structure belonging to the DECOMP deck while Cobre supplies "
+    "weekly stage blocks, and no aggregation of this case's own blocks reproduces the reference "
+    "triple (the closest, stages 0-5, is off by 0.0054 in proportion). Second, the block's axis is "
+    "itself unsettled: the populated width is ngnl*npat while idecomp's reader consumes "
+    "ngnl*n_estagios. Populating this block needs a DECOMP-side input, not better Cobre parsing."
 )
 
-PREMISES: tuple[str, ...] = (_P1, _P2, _P3, _P4, _P5, _P6, _P7, _P8, _P9, _P10, _P11, _P12)
+_P13 = (
+    "P13: cortdeco holds numero_cortes + 1 records, and the extra one duplicates the last "
+    "cut-building node's last cut. The reference deck holds the next backward-pass cut there, "
+    "written but not yet exposed in the head table, which a checkpoint with a whole number of "
+    "completed iterations cannot supply. Nothing points to that record, since the chains only "
+    "step backwards from the heads. A duplicate is mathematically inert, because a repeated "
+    "hyperplane adds nothing to an FCF, while a zero-filled record would fabricate theta >= 0."
+)
+
+PREMISES: tuple[str, ...] = (
+    _P1,
+    _P2,
+    _P3,
+    _P4,
+    _P5,
+    _P6,
+    _P7,
+    _P8,
+    _P9,
+    _P10,
+    _P11,
+    _P12,
+    _P13,
+)
 
 _TRACKED_LIBRARIES = ("numpy", "pandas", "flatbuffers")
 
