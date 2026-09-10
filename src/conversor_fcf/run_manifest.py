@@ -1,7 +1,14 @@
 """Run manifest: the record of which premise set and inputs produced an output pair.
 
 `PREMISES` is the single source of truth for the v1 premises. Documentation
-quotes it rather than restating it, so code and prose cannot drift apart.
+quotes it rather than restating it, so code and prose cannot drift apart. No
+entry here states how many premises there are: a count in prose next to the
+tuple that defines it goes stale on the next addition, and has once already.
+
+A premise that another premise has taken off the code path is marked **DORMANT**
+in its own text rather than deleted. A manifest that asserts a rule with no
+effect on the output pair is an auditability defect, and so is one that drops a
+rule the code still carries: naming the dormancy is what distinguishes the two.
 """
 
 from __future__ import annotations
@@ -28,12 +35,18 @@ _P3 = (
 )
 _P4 = (
     "P4: GNL coefficients negated (Cobre negative, DECOMP positive), isolated in one "
-    "named, tested, documented function"
+    "named, tested, documented function. DORMANT while P14 holds: cortdeco emits its whole "
+    "pi_gnl block as zeros, so no real coefficient reaches this rule and it changes no byte of "
+    "either output file. negate_gnl and negate_gnl_array are retained, tested and reachable "
+    "because ticket-016 needs them the moment the reduction is settled"
 )
 _P5 = (
     "P5: GNL disaggregated across the 3 load blocks weighted by each stage's own hours. The "
     "weights are per-stage, not one triple for the study: stage 0 is 24/65/79, stages 1-4 are "
-    "15/64/89, stage 5 is 12/61/95 and stage 6 is 51/226/323 over 600 hours rather than 168"
+    "15/64/89, stage 5 is 12/61/95 and stage 6 is 51/226/323 over 600 hours rather than 168. "
+    "DORMANT while P14 holds: with the pi_gnl block emitted as zeros there is no coefficient to "
+    "spread across load blocks, so this rule changes no byte of either output file. "
+    "gnl_block_weights is retained and tested for ticket-016"
 )
 _P6 = "P6: submarket = bus_id + 1; bus 5 (IV) excluded; n_submercados = 5"
 _P7 = (
@@ -79,6 +92,22 @@ _P13 = (
     "hyperplane adds nothing to an FCF, while a zero-filled record would fabricate theta >= 0."
 )
 
+_P14 = (
+    "P14: cortdeco's pi_gnl coefficients emitted as zeros. Only the values are zero: the block "
+    "stays dimensioned by the NCOEF formula and occupies its full "
+    "n_sbm_gnl*n_estagios*n_patamares span, and n_sbm_gnl, codigos_submercados_gnl (int32 on "
+    "disk despite idecomp surfacing floats), NCOEF, the record size and the file size are all "
+    "unchanged. Reducing Cobre's anticipated-thermal ring positions to DECOMP's "
+    "(submarket, stage, block) address is unresolved: ring positions sharing a delivery month "
+    "carry different coefficients, so they are distinct state variables rather than copies, and "
+    "the reference deck comes from an independent run whose GNL magnitudes span seven orders of "
+    "magnitude against the oracle's 15% band and therefore cannot arbitrate between candidate "
+    "reductions. Every candidate writes a structurally valid file that DESSEM reads without "
+    "complaint, so a wrong one would corrupt the cut's GNL slope invisibly - unlike P1, P11 and "
+    "P12, whose divergence is a declared zero. Deferred to ticket-016; P4 and P5 are DORMANT "
+    "while this premise holds"
+)
+
 PREMISES: tuple[str, ...] = (
     _P1,
     _P2,
@@ -93,6 +122,7 @@ PREMISES: tuple[str, ...] = (
     _P11,
     _P12,
     _P13,
+    _P14,
 )
 
 _TRACKED_LIBRARIES = ("numpy", "pandas", "flatbuffers")

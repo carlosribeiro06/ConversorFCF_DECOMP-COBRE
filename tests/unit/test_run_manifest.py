@@ -43,8 +43,8 @@ def _manifest_payload(tmp_path: Path) -> dict[str, object]:
 
 
 def test_premises_are_numbered_contiguously_from_one() -> None:
-    assert len(PREMISES) == 13
-    assert [entry.split(":", 1)[0] for entry in PREMISES] == [f"P{n}" for n in range(1, 14)]
+    assert len(PREMISES) == 14
+    assert [entry.split(":", 1)[0] for entry in PREMISES] == [f"P{n}" for n in range(1, 15)]
 
 
 def test_premise_eleven_names_every_zero_filled_reg_ten_field() -> None:
@@ -82,6 +82,49 @@ def test_premise_five_does_not_present_one_stage_as_the_whole_study() -> None:
     for split in ("24/65/79", "15/64/89", "12/61/95", "51/226/323"):
         assert split in p5, f"the premise must name {split}"
     assert "600" in p5, "stage 6 spans 600 hours, not 168"
+
+
+def test_premise_fourteen_separates_the_zeroed_values_from_the_dimensioned_block() -> None:
+    """The distinction P14 lives or dies on.
+
+    "GNL emitted as zeros" read as "GNL removed" would drop the block from
+    `NCOEF` and shorten the coefficient span, producing a differently shaped file
+    that still reads. The premise must therefore say what is unchanged, not only
+    what is zero.
+    """
+    p14 = next(entry for entry in PREMISES if entry.startswith("P14:"))
+    assert "Only the values are zero" in p14
+    for unchanged in ("n_sbm_gnl", "codigos_submercados_gnl", "NCOEF", "file size"):
+        assert unchanged in p14, f"P14 must state that {unchanged} is unchanged"
+    assert "ticket-016" in p14, "a deferred premise must name its follow-up"
+    assert "invisibly" in p14, "why this differs from P1/P11/P12's declared zeros"
+
+
+def test_premises_four_and_five_declare_themselves_dormant() -> None:
+    """A premise with no effect on the output pair must say so.
+
+    P4 negates GNL coefficients and P5 spreads them across load blocks. With the
+    whole block zeroed by P14, neither changes a byte, and a manifest that
+    asserts them flatly would overstate what the file honours.
+    """
+    for number in ("P4", "P5"):
+        entry = next(item for item in PREMISES if item.startswith(f"{number}:"))
+        assert "DORMANT while P14 holds" in entry, f"{number} must declare its dormancy"
+        assert "ticket-016" in entry, f"{number} must say why the code is retained"
+
+
+def test_no_premise_text_states_how_many_premises_there_are() -> None:
+    """A count in prose beside the tuple that defines it has gone stale once already.
+
+    Both spellings are rejected: a bare numeral form like "all 14 premises" slips
+    past a word list. "ten premises" carries its noun because bare "ten" matches
+    "written" inside P13, which is why this list is deliberately asymmetric.
+    """
+    words = ("ten premises", "eleven", "twelve", "thirteen", "fourteen", "fifteen")
+    numerals = tuple(f"{n} premises" for n in range(2, 31))
+    for entry in PREMISES:
+        for count in words + numerals:
+            assert count not in entry.lower(), f"{entry.split(':', 1)[0]} carries a count"
 
 
 def test_manifest_has_all_eight_top_level_keys(tmp_path: Path) -> None:

@@ -43,6 +43,7 @@ from conversor_fcf.decomp.layout import (
     LayoutError,
     assert_mapcut_layout,
     assert_no_travel_time,
+    cut_head_indices,
     derive_n_utv,
     mapcut_record_count,
 )
@@ -130,9 +131,9 @@ def header(
     trunk = pool_ids[:-1]
     total_cuts = len(trunk) * manifest.completed_iterations
     node_count = len(manifest.nodes)
-    heads = tuple(
-        total_cuts - position if position < len(trunk) else 0 for position in range(node_count)
-    )
+    # Requirement 1: consumed from layout.py rather than derived here, so mapcut
+    # reg 1's heads and cortdeco's chain origins cannot drift apart.
+    heads = cut_head_indices(total_cuts, len(trunk), node_count)
 
     first_node_by_stage: dict[int, int] = {}
     for node in manifest.nodes:

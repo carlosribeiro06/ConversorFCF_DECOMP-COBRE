@@ -6,17 +6,17 @@ values, never against the in-memory array `serialize_cut` was given: per the
 master plan's Numeric Path Testing Policy, a self-referential round trip
 proves only internal consistency.
 
-`pi_gnl` is written as zeros here. Placing a real `AffinePiece`'s
-anticipated-thermal coefficients onto `pi_gnl`'s `(submarket, stage, block)`
-address needs a thermal-to-bus lookup and a delivery-date-to-stage lookup that
-live in `CaseInputs`, outside `ticket-009`'s scope (see the module docstring
-of `cortdeco_writer.py`); this test exercises the byte-level record mechanics
-and the `rhs`/`pi_varm` conversions, which need no such lookup, and `ticket-010`
-extends this file once chaining exists.
+`pi_gnl` is zeros here under premise **P14**, produced by `zeroed_gnl_block`
+rather than by a bare `np.zeros` call, so this test exercises the same site the
+writer does. Reducing a real `AffinePiece`'s anticipated-thermal ring positions
+onto `pi_gnl`'s `(submarket, stage, block)` address is unresolved and deferred
+to `ticket-016`; what is tested here is the byte-level record mechanics and the
+`rhs`/`pi_varm` conversions, which need no such reduction. The whole-file
+anchors - 289 records, 7,796,064 bytes and the 42-slot GNL span at positions
+170-211 - live in `tests/unit/test_cortdeco_chaining.py`, which reaches this
+project's scalars without needing the reference case on disk.
 """
 
-import logging
-from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +24,12 @@ import pytest
 
 from conversor_fcf.cobre.entities import EntityType
 from conversor_fcf.cobre.policy_reader import StageCutPool, read_stage_cuts
-from conversor_fcf.decomp.cortdeco_writer import CutInput, serialize_cut, storage_coefficients
+from conversor_fcf.decomp.cortdeco_writer import (
+    CutInput,
+    serialize_cut,
+    storage_coefficients,
+    zeroed_gnl_block,
+)
 from conversor_fcf.decomp.layout import TAMANHO_CORTE, cortdeco_block_offsets, cortdeco_ncoef
 from conversor_fcf.mapping.rules import load_hydro_codes
 
@@ -57,17 +62,6 @@ def pool() -> StageCutPool:
 @pytest.fixture(scope="module")
 def hydro_codes() -> tuple[int, ...]:
     return load_hydro_codes(REPO_ROOT / "decomp_hydro_codes.json")
-
-
-@pytest.fixture(autouse=True)
-def _propagating_package_logger() -> Iterator[None]:
-    logger = logging.getLogger("conversor_fcf")
-    previous = logger.propagate
-    logger.propagate = True
-    try:
-        yield
-    finally:
-        logger.propagate = previous
 
 
 def test_ncoef_for_this_projects_own_scalars(hydro_codes: tuple[int, ...]) -> None:
@@ -110,7 +104,7 @@ def test_a_real_affine_piece_round_trips_at_the_byte_level(
         n_patamares=N_PATAMARES,
     )
     pi_varm = storage_coefficients(piece, pool.slots, hydro_codes)
-    pi_gnl = np.zeros(offsets.ncoef - offsets.pi_gnl, dtype=np.float64)
+    pi_gnl = zeroed_gnl_block(offsets)
 
     cut = CutInput(intercept=piece.intercept, pi_varm=pi_varm, pi_gnl=pi_gnl)
     data = serialize_cut(cut, pointer=283, offsets=offsets)

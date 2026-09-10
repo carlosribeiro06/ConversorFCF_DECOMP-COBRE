@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from conversor_fcf.decomp import mapcut_writer
+from conversor_fcf.decomp import layout, mapcut_writer
 from conversor_fcf.decomp.layout import (
     PHYSICAL_RECORD_COUNT,
     RECORD_SIZE,
@@ -223,14 +223,15 @@ def test_a_short_write_is_refused(
     The write is truncated for real rather than the checker mocked, so the file
     reaching `assert_mapcut_layout` is genuinely one record short.
     """
-    original = Path.write_bytes
+    original = layout.write_durably
 
-    def truncating(self: Path, data: bytes) -> int:
-        if self.name.endswith(".partial"):
-            return original(self, data[:-RECORD_SIZE])
-        return original(self, data)
+    def truncating(target: Path, payload: bytes) -> None:
+        if target.name.endswith(".partial"):
+            original(target, payload[:-RECORD_SIZE])
+            return
+        original(target, payload)
 
-    monkeypatch.setattr(Path, "write_bytes", truncating)
+    monkeypatch.setattr(mapcut_writer, "write_durably", truncating)
     path = tmp_path / "mapcut.rv0"
     with pytest.raises(LayoutError, match="holds 27 records but its header declares 28"):
         write_mapcut(mapcut_header(), path)
@@ -241,15 +242,15 @@ def test_a_short_write_is_refused(
 def test_a_failed_write_leaves_nothing_behind(
     tmp_path: Path, mapcut_header: HeaderFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original = Path.write_bytes
+    original = layout.write_durably
 
-    def failing(self: Path, data: bytes) -> int:
-        if self.name.endswith(".partial"):
-            original(self, data[: RECORD_SIZE // 2])
+    def failing(target: Path, payload: bytes) -> None:
+        if target.name.endswith(".partial"):
+            original(target, payload[: RECORD_SIZE // 2])
             raise OSError("no space left on device")
-        return original(self, data)
+        original(target, payload)
 
-    monkeypatch.setattr(Path, "write_bytes", failing)
+    monkeypatch.setattr(mapcut_writer, "write_durably", failing)
     path = tmp_path / "mapcut.rv0"
     with pytest.raises(OSError, match="no space left"):
         write_mapcut(mapcut_header(), path)

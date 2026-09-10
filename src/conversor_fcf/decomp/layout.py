@@ -22,6 +22,7 @@ GNL configuration rather than per-node data; `idecomp` reads only the first
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -369,10 +370,11 @@ def assert_cortdeco_layout(path: Path, numero_cortes: int, n_nodes: int) -> None
     if n_nodes <= 0:
         raise LayoutError(f"n_nodes must be positive, got {n_nodes}")
     expected = cortdeco_record_count(numero_cortes)
-    records, remainder = divmod(path.stat().st_size, TAMANHO_CORTE)
+    size = path.stat().st_size
+    records, remainder = divmod(size, TAMANHO_CORTE)
     if remainder:
         raise LayoutError(
-            f"{path} is {path.stat().st_size} bytes, not a whole number of {TAMANHO_CORTE}-byte "
+            f"{path} is {size} bytes, not a whole number of {TAMANHO_CORTE}-byte "
             f"records: {records} records plus {remainder} trailing bytes"
         )
     if records != expected:
@@ -384,7 +386,7 @@ def assert_cortdeco_layout(path: Path, numero_cortes: int, n_nodes: int) -> None
     pointers = _read_pointers(path, records)
     heads = cut_head_indices(numero_cortes, n_nodes, n_nodes)
     per_node = numero_cortes // n_nodes
-    visits: dict[int, int] = {}
+    visited: set[int] = set()
 
     for node, head in enumerate(heads):
         index = head - 1
@@ -395,12 +397,12 @@ def assert_cortdeco_layout(path: Path, numero_cortes: int, n_nodes: int) -> None
                     f"node {node}'s chain reached record {index}, outside the cut records "
                     f"0..{numero_cortes - 1}"
                 )
-            visits[index] = visits.get(index, 0) + 1
-            if visits[index] > 1:
+            if index in visited:
                 raise LayoutError(
                     f"record {index} is reached by more than one chain, so the chains do not "
                     f"partition the file"
                 )
+            visited.add(index)
             walked += 1
             pointer = pointers[index]
             if pointer == 0:
@@ -425,6 +427,72 @@ def assert_cortdeco_layout(path: Path, numero_cortes: int, n_nodes: int) -> None
             f"cut-building node's head: it continues that node's chain rather than starting a "
             f"new one (J4)"
         )
+
+
+def write_durably(path: Path, payload: bytes) -> None:
+    """Write `payload` and force it to stable storage before returning.
+
+    `Path.write_bytes` followed by `os.replace` is atomic with respect to
+    *readers* but not to a machine crash: the rename can reach the disk while the
+    data blocks do not, leaving a full-size zero-filled file at the destination.
+    That failure mode is silent for both artifacts this project writes. A
+    zero-filled `cortdeco` is the worse of the two: every chain pointer reads 0,
+    so every record looks like its own chain head and every cut like an all-zero
+    hyperplane — `theta >= 0`, the exact fabrication premise P13 refuses to write
+    deliberately.
+
+    The parent directory is synced too, since the rename is a directory
+    operation and syncing only the file would leave the entry itself unflushed.
+    Callers still perform the rename, because the invariant checks belong between
+    the write and the rename.
+    """
+    with path.open("wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def sync_directory(path: Path) -> None:
+    """Force a completed rename in `path` to stable storage."""
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def assert_gnl_span_is_zero(path: Path, records: int, offsets: CutBlockOffsets) -> None:
+    """Check every record's `pi_gnl` span is zero on the written file (premise P14).
+
+    Deliberately not folded into `assert_cortdeco_layout`, which is about the
+    chain: this is the one check that goes away when `ticket-016` populates the
+    block, and a premise-scoped check named after its premise is a single call
+    site to delete rather than surgery inside a function about chains. It is the
+    counterpart of `assert_mapcut_layout`'s P1 span scan, and it runs against the
+    file rather than the input array for the same reason: the array a caller
+    passed proves nothing about the bytes that reached the disk.
+
+    The **byte pattern** is checked, not the numeric value. `-0.0` compares equal
+    to zero while carrying `0x…80`, a pattern the reference deck does not hold in
+    any of its 36 zero GNL slots, and negating a zero coefficient is exactly how
+    one appears.
+    """
+    width = offsets.ncoef - offsets.pi_gnl
+    span = 8 * width
+    with path.open("rb") as handle:
+        for index in range(records):
+            handle.seek(index * TAMANHO_CORTE + 4 + 8 * offsets.pi_gnl)
+            block = handle.read(span)
+            # strip runs in C; the byte-by-byte search happens only on the record
+            # that already failed.
+            if block.strip(b"\x00"):
+                position = next(offset for offset, byte in enumerate(block) if byte)
+                slot = position // 8
+                raise LayoutError(
+                    f"record {index}'s pi_gnl slot {slot} (coefficient position "
+                    f"{offsets.pi_gnl + slot}) is not zero: byte {position % 8} of it is "
+                    f"{block[position]}. All {width} slots are zero under premise P14"
+                )
 
 
 def assert_uniform_blocks(patamares_por_estagio: Sequence[int]) -> int:

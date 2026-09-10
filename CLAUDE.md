@@ -47,6 +47,24 @@ and do not "fix" code that looks wrong because it contradicts an intuition liste
   block-indexed slot produces a wrong file that still reads cleanly. Note that examining only
   offsets 0-28 makes the block look absent — the int32 head read as float64 yields denormals around
   6.4e-314, which is not the block.
+- **`cortdeco`'s `pi_gnl` coefficients are emitted as zeros under premise P14, and the reduction
+  behind them is an open TODO** — the divergence most like P12, and deferred to `ticket-016`
+  (`plans/conversor-fcf/epic-08-documentation-deferred/`), which holds the full evidence record.
+  Only the *values* are zero: `n_sbm_gnl`, `codigos_submercados_gnl`, the
+  `n_sbm_gnl*n_estagios*n_patamares` term of `NCOEF`, the 42-slot span at positions 170-211, the 289
+  records and the 7,796,064 bytes are all unchanged. `write_cortdeco` enforces this and
+  `assert_gnl_span_is_zero` verifies it on the written file. The `ticket-005` ECO CSVs still carry
+  the **real** Cobre GNL values, which is what makes the zeroing auditable rather than opaque.
+  Consequently premises **P4 (GNL sign) and P5 (load-block weighting) are DORMANT**: `negate_gnl`,
+  `negate_gnl_array` and `gnl_block_weights` remain tested and reachable for `ticket-016`, but no
+  real coefficient reaches them. The open problem, in one line: the reference populates only 6 of 42
+  GNL slots, and that is consistent both with a *collapse* (DECOMP's GNL state is one declaration per
+  `(submarket, block)` and the stage axis is vestigial) and with an *addressing* reading (the axis is
+  genuine and that deck's horizon is simply one month) — the two are mutually exclusive, and nothing
+  in either artifact separates them. Do not pick one: all three candidate reductions write a
+  structurally valid file DESSEM reads without complaint, so a wrong one corrupts the cut's GNL slope
+  invisibly. Related: negating a zero yields `-0.0`, whose byte pattern is `0x…80`; the reference
+  holds 36 true-zero GNL slots and no negative zero, so `_normalize_signed_zero` removes it.
 - `NCOEF` must be computed from the formula
   `1 + n_uhes + n_utv * max_lag + n_sbm_gnl * n_estagios * n_patamares`, never inferred from the
   last non-zero coefficient — the GNL block is dimensioned by stage count but only lag 1 is

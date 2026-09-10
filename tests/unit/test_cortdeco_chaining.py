@@ -5,10 +5,17 @@ from `ticket-010`'s findings: 439 records against the reference's `numero_cortes
 of 438, the heads `(438..433)`, `chain_pointer(437, 6) == 432`, and this
 project's 289 records over 7,796,064 bytes.
 
-The two named deliberate mutations are **a 0-based chain pointer** and
-**`next_index = 0` on the extra record**. Both were applied, observed red,
-reverted and confirmed byte-identical; the evidence is in the plan's state entry.
-Every mutation guard below calls the function under mutation (policy clause 4).
+The named deliberate mutations are **a 0-based chain pointer**, **`next_index = 0`
+on the extra record** and **dropping the GNL term from `NCOEF`**. Each was
+applied, observed red, reverted and confirmed byte-identical; the evidence is in
+the plan's state entry. Every mutation guard below calls the function under
+mutation (policy clause 4).
+
+The last section covers premise P14, which emits `cortdeco`'s `pi_gnl`
+coefficients as zeros while leaving the block dimensioned. Its anchors read the
+written bytes rather than the input array, because an all-zeros `pi_gnl` is a
+valid-looking input: a writer that dropped the block, mis-addressed it, or left
+`-0.0` in it would satisfy any assertion made on what it was given.
 
 Chains are always walked through the **on-disk** pointers, never recomputed from
 `chain_pointer`: a check that regenerates the arithmetic it verifies proves only
@@ -16,26 +23,30 @@ that the formula equals itself.
 """
 
 import logging
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from conversor_fcf.decomp import cortdeco_writer
+from conversor_fcf.decomp import cortdeco_writer, layout
 from conversor_fcf.decomp.cortdeco_writer import (
     CutInput,
     node_and_iteration,
     write_cortdeco,
+    zeroed_gnl_block,
 )
 from conversor_fcf.decomp.layout import (
     TAMANHO_CORTE,
     CutBlockOffsets,
     LayoutError,
     assert_cortdeco_layout,
+    assert_gnl_span_is_zero,
     assert_pointer_in_range,
     chain_pointer,
     cortdeco_block_offsets,
+    cortdeco_ncoef,
     cortdeco_record_count,
     cut_head_indices,
 )
@@ -58,6 +69,16 @@ NODES = 3
 PER_NODE = 4
 CORTES = NODES * PER_NODE
 RECORDS = CORTES + 1
+
+# This project's own cut geometry (I3, I4): NCOEF 212 with the 42-slot GNL block
+# at positions 170-211. Zeroed under premise P14 but still dimensioned.
+PROJECT_UHES = 169
+PROJECT_NCOEF = 212
+PROJECT_PI_GNL = 170
+PROJECT_GNL_SLOTS = 42
+PROJECT_GNL_LAST = 211
+PROJECT_NODES = 6
+PROJECT_PER_NODE = 48
 
 
 @pytest.fixture(autouse=True)
@@ -104,6 +125,14 @@ def _pointers(path: Path) -> list[int]:
 def _record(path: Path, index: int) -> bytes:
     raw = path.read_bytes()
     return raw[index * TAMANHO_CORTE : (index + 1) * TAMANHO_CORTE]
+
+
+def _broken_pointer(path: Path, destination: Path, record: int, pointer: int) -> Path:
+    """Write a copy of `path` at `destination` with one record's pointer overwritten."""
+    raw = bytearray(path.read_bytes())
+    np.frombuffer(raw, dtype="<i4", count=1, offset=record * TAMANHO_CORTE)[0] = pointer
+    destination.write_bytes(bytes(raw))
+    return destination
 
 
 # --- the head table ---------------------------------------------------------
@@ -294,11 +323,10 @@ def test_a_corrupted_pointer_is_refused_naming_the_record(tmp_path: Path) -> Non
     path = tmp_path / "cortdeco.rv0"
     write_cortdeco(_cuts(), path, numero_cortes=CORTES, offsets=_offsets())
 
-    raw = bytearray(path.read_bytes())
-    # Record 11 is node 0's head; point it at itself to break the walk length.
-    np.frombuffer(raw, dtype="<i4", count=1, offset=11 * TAMANHO_CORTE)[0] = 0
-    broken = tmp_path / "broken.rv0"
-    broken.write_bytes(bytes(raw))
+    # Record 11 is node 0's head; terminate it immediately so its chain holds one
+    # cut instead of PER_NODE. Pointing it at itself (pointer=12) would trip the
+    # visited-record check instead, which the next test covers.
+    broken = _broken_pointer(path, tmp_path / "broken.rv0", record=11, pointer=0)
 
     with pytest.raises(LayoutError) as excinfo:
         assert_cortdeco_layout(broken, CORTES, NODES)
@@ -312,10 +340,7 @@ def test_a_zeroed_extra_record_pointer_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "cortdeco.rv0"
     write_cortdeco(_cuts(), path, numero_cortes=CORTES, offsets=_offsets())
 
-    raw = bytearray(path.read_bytes())
-    np.frombuffer(raw, dtype="<i4", count=1, offset=CORTES * TAMANHO_CORTE)[0] = 0
-    broken = tmp_path / "broken.rv0"
-    broken.write_bytes(bytes(raw))
+    broken = _broken_pointer(path, tmp_path / "broken.rv0", record=CORTES, pointer=0)
 
     with pytest.raises(LayoutError) as excinfo:
         assert_cortdeco_layout(broken, CORTES, NODES)
@@ -329,27 +354,38 @@ def test_a_pointer_leaving_the_cut_records_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "cortdeco.rv0"
     write_cortdeco(_cuts(), path, numero_cortes=CORTES, offsets=_offsets())
 
-    raw = bytearray(path.read_bytes())
     # 13 is 1-based, so 0-based 12 — the extra record, outside the cut records.
-    np.frombuffer(raw, dtype="<i4", count=1, offset=11 * TAMANHO_CORTE)[0] = 13
-    broken = tmp_path / "broken.rv0"
-    broken.write_bytes(bytes(raw))
+    broken = _broken_pointer(path, tmp_path / "broken.rv0", record=11, pointer=13)
 
     with pytest.raises(LayoutError, match="reached record 12, outside the cut records 0..11"):
         assert_cortdeco_layout(broken, CORTES, NODES)
 
 
+def test_a_negative_pointer_is_not_mistaken_for_a_terminator(tmp_path: Path) -> None:
+    """Only `0` terminates a chain, and the check must be equality, not `<= 0`.
+
+    Relaxing the terminator test to `pointer <= 0` survived the whole suite,
+    because `_broken_pointer` was only ever exercised with 0 and with pointers
+    past the end. A negative on-disk pointer would then read as a valid
+    terminator, so a corrupted file whose chain length happened to come out right
+    would be accepted.
+    """
+    path = tmp_path / "cortdeco.rv0"
+    write_cortdeco(_cuts(), path, numero_cortes=CORTES, offsets=_offsets())
+    broken = _broken_pointer(path, tmp_path / "broken.rv0", record=11, pointer=-5)
+
+    with pytest.raises(LayoutError, match="reached record -6, outside the cut records 0..11"):
+        assert_cortdeco_layout(broken, CORTES, NODES)
+
+
 def test_two_chains_reaching_one_record_are_refused(tmp_path: Path) -> None:
-    """Merged chains keep their length, so only a visit count catches them."""
+    """Merged chains keep their length, so only tracking visited records catches them."""
     path = tmp_path / "cortdeco.rv0"
     write_cortdeco(_cuts(), path, numero_cortes=CORTES, offsets=_offsets())
 
-    raw = bytearray(path.read_bytes())
     # Node 1's chain is 10 -> 7 -> 4 -> 1; redirect its first hop into node 0's
     # chain (11 -> 8 -> 5 -> 2) at the same depth, so both stay 4 records long.
-    np.frombuffer(raw, dtype="<i4", count=1, offset=10 * TAMANHO_CORTE)[0] = 9
-    broken = tmp_path / "broken.rv0"
-    broken.write_bytes(bytes(raw))
+    broken = _broken_pointer(path, tmp_path / "broken.rv0", record=10, pointer=9)
 
     with pytest.raises(LayoutError, match="record 8 is reached by more than one chain"):
         assert_cortdeco_layout(broken, CORTES, NODES)
@@ -413,6 +449,41 @@ def test_unequal_chains_are_refused(tmp_path: Path) -> None:
         write_cortdeco(cuts, path, numero_cortes=CORTES, offsets=_offsets())
 
 
+def test_a_zero_cut_count_is_refused_by_name(tmp_path: Path) -> None:
+    """Not an IndexError: every other rejected input here raises LayoutError.
+
+    With `per_node == 0` the extra record's `cuts[n_nodes - 1][per_node - 1]`
+    indexes an empty list at `[-1]`, which used to escape as a bare
+    `IndexError: list index out of range`.
+    """
+    with pytest.raises(LayoutError, match="every chain would be empty"):
+        write_cortdeco([[], [], []], tmp_path / "cortdeco.rv0", numero_cortes=0, offsets=_offsets())
+    assert not list(tmp_path.iterdir()), "nothing is written when the count is refused"
+
+
+def test_an_ncoef_beyond_the_record_capacity_is_refused_by_name() -> None:
+    """The record's other fixed-width limit, named like `assert_pointer_in_range`.
+
+    A `TAMANHO_CORTE` record holds `(26976 - 4) // 8 = 3371` float64 after the
+    4-byte pointer. Beyond that `np.frombuffer` raised an unnamed
+    `ValueError: buffer is smaller than requested size`, mentioning neither
+    `NCOEF` nor `TAMANHO_CORTE`. Unreachable for this deck at 212 against 3371.
+    """
+    capacity = (TAMANHO_CORTE - 4) // 8
+    assert capacity == 3371
+    offsets = CutBlockOffsets(rhs=0, pi_varm=1, pi_gnl=2, ncoef=capacity + 1)
+    cut = CutInput(
+        intercept=0.0, pi_varm=np.zeros(1), pi_gnl=np.zeros(offsets.ncoef - offsets.pi_gnl)
+    )
+    with pytest.raises(LayoutError, match=f"NCOEF is {capacity + 1}"):
+        cortdeco_writer.serialize_cut(cut, pointer=0, offsets=offsets)
+
+
+def test_the_project_ncoef_is_well_inside_the_record_capacity() -> None:
+    """The guard above must not be able to refuse a real case."""
+    assert _project_offsets().ncoef == PROJECT_NCOEF < (TAMANHO_CORTE - 4) // 8
+
+
 def test_no_cut_building_nodes_is_refused(tmp_path: Path) -> None:
     with pytest.raises(LayoutError, match="no cut-building nodes"):
         write_cortdeco([], tmp_path / "cortdeco.rv0", numero_cortes=0, offsets=_offsets())
@@ -426,6 +497,52 @@ def test_the_write_is_atomic(tmp_path: Path) -> None:
     write_cortdeco(_cuts(), path, numero_cortes=CORTES, offsets=_offsets())
     assert path.is_file()
     assert not list(path.parent.glob("*.partial"))
+
+
+def test_the_payload_is_synced_before_the_rename_and_the_directory_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Durability, in the order that makes it durability rather than decoration.
+
+    `os.replace` is atomic for readers but not against a machine crash: the
+    rename can reach the disk while the data blocks do not, leaving a full-size
+    zero-filled file at the destination. In a zero-filled `cortdeco` every chain
+    pointer reads 0, so every record looks like its own chain head and every cut
+    like an all-zero hyperplane — `theta >= 0`, the fabrication premise P13
+    refuses to write on purpose. It reads cleanly, which is why it must not be
+    reachable.
+
+    The two pre-rename invariant checks read the file back through the page
+    cache, so they prove nothing about durability and cannot substitute for this.
+    """
+    events: list[str] = []
+    # The originals come from `layout`, which defines them: mypy --strict forbids
+    # reading a re-exported name back off the module that imported it.
+    real_replace = os.replace
+    real_write_durably = layout.write_durably
+    real_sync_directory = layout.sync_directory
+
+    def spy_write(target: Path, payload: bytes) -> None:
+        real_write_durably(target, payload)
+        events.append(f"fsync:{target.name}")
+
+    def spy_replace(source: object, destination: object) -> None:
+        events.append("replace")
+        real_replace(source, destination)  # type: ignore[arg-type]
+
+    def spy_sync_directory(target: Path) -> None:
+        real_sync_directory(target)
+        events.append("fsync:dir")
+
+    monkeypatch.setattr(cortdeco_writer, "write_durably", spy_write)
+    monkeypatch.setattr(os, "replace", spy_replace)
+    monkeypatch.setattr(cortdeco_writer, "sync_directory", spy_sync_directory)
+
+    path = tmp_path / "cortdeco.rv0"
+    write_cortdeco(_cuts(), path, numero_cortes=CORTES, offsets=_offsets())
+
+    assert events == ["fsync:cortdeco.rv0.partial", "replace", "fsync:dir"]
+    assert path.stat().st_size == RECORDS * TAMANHO_CORTE, "and the file is still whole"
 
 
 def test_the_layout_check_runs_before_the_rename(
@@ -458,3 +575,260 @@ def test_premise_p13_is_logged_once_per_run(
     assert len(warnings) == 1, "one per run, not one per record"
     assert "duplicates" in warnings[0]
     assert "theta >= 0" in warnings[0], "the rejected alternative must be named"
+
+
+# --- premise P14: the zeroed but dimensioned GNL block ----------------------
+#
+# Zeroing is easier to test wrongly than to test. Every anchor below reads the
+# **written bytes**, never the input array: an all-zeros `pi_gnl` is a
+# valid-looking input, so a writer that dropped the block entirely, or that laid
+# it at the wrong offset, would satisfy any assertion made on its own input.
+
+
+def _project_offsets() -> CutBlockOffsets:
+    return cortdeco_block_offsets(
+        n_uhes=PROJECT_UHES, n_utv=0, max_lag=0, n_sbm_gnl=2, n_estagios=7, n_patamares=3
+    )
+
+
+def _project_cuts() -> list[list[CutInput]]:
+    """6 nodes x 48 iterations at this project's real coefficient geometry.
+
+    Synthetic *values* at real *scalars*: the claim under test is dimensional -
+    that the GNL block still occupies positions 170-211 of all 289 records - and
+    real cut values are already covered byte-for-byte by
+    `tests/integration/test_cortdeco_assembly.py`. Assembling this from the six
+    real trunk pools would duplicate the pipeline `ticket-012` owns.
+    """
+    offsets = _project_offsets()
+    return [
+        [
+            CutInput(
+                intercept=float(1_000_000 * (node + 1) + 1000 * iteration),
+                pi_varm=np.full(PROJECT_UHES, float(node + 1)),
+                pi_gnl=zeroed_gnl_block(offsets),
+            )
+            for iteration in range(PROJECT_PER_NODE)
+        ]
+        for node in range(PROJECT_NODES)
+    ]
+
+
+def _gnl_span(record: bytes, offsets: CutBlockOffsets) -> bytes:
+    start = 4 + 8 * offsets.pi_gnl
+    return record[start : start + 8 * (offsets.ncoef - offsets.pi_gnl)]
+
+
+def test_the_gnl_block_is_dimensioned_by_the_formula_not_by_its_contents() -> None:
+    """The mutation guard for dropping the GNL term from NCOEF.
+
+    Removing `n_sbm_gnl*n_estagios*n_patamares` from the formula takes NCOEF from
+    212 to 170 and the GNL width from 42 to 0. The file would still be 289
+    records of 26,976 bytes, because the record is fixed-size and zero-padded, so
+    only the declared span moves - which is exactly why the span is asserted
+    here and read from the bytes below rather than inferred from the file size.
+    """
+    offsets = _project_offsets()
+    assert offsets.ncoef == PROJECT_NCOEF
+    assert offsets.pi_gnl == PROJECT_PI_GNL
+    assert offsets.ncoef - offsets.pi_gnl == PROJECT_GNL_SLOTS
+    assert offsets.ncoef - 1 == PROJECT_GNL_LAST
+    # The term itself, isolated: 2 submarkets x 7 stages x 3 blocks.
+    assert (
+        PROJECT_NCOEF
+        - cortdeco_ncoef(
+            n_uhes=PROJECT_UHES, n_utv=0, max_lag=0, n_sbm_gnl=0, n_estagios=7, n_patamares=3
+        )
+        == 2 * 7 * 3
+    )
+
+
+def test_zeroed_gnl_block_is_the_full_declared_width() -> None:
+    offsets = _project_offsets()
+    block = zeroed_gnl_block(offsets)
+    assert len(block) == PROJECT_GNL_SLOTS
+    assert block.dtype == np.float64
+    assert not block.any()
+
+
+def test_the_gnl_span_is_zero_bytes_in_every_record(tmp_path: Path) -> None:
+    """Read from disk, not from the input array (Requirement 6, premise P14)."""
+    offsets = _offsets()
+    path = tmp_path / "cortdeco.rv0"
+    write_cortdeco(_cuts(), path, numero_cortes=CORTES, offsets=offsets)
+
+    width = offsets.ncoef - offsets.pi_gnl
+    assert width > 0, "a zero-width block would make every assertion below vacuous"
+    for index in range(RECORDS):
+        assert _gnl_span(_record(path, index), offsets) == b"\x00" * (8 * width), (
+            f"record {index} carries a non-zero byte in the pi_gnl span"
+        )
+
+
+def test_the_gnl_span_is_true_zero_not_negative_zero(tmp_path: Path) -> None:
+    """The guard for `_normalize_signed_zero`, which P4's negation makes necessary.
+
+    `-0.0` compares equal to zero, so a numeric assertion passes while the bytes
+    read `0x…80` - a pattern the reference deck holds in none of its 36 zero GNL
+    slots. Both readings are asserted so the difference between them stays
+    visible.
+    """
+    offsets = _offsets()
+    path = tmp_path / "cortdeco.rv0"
+    write_cortdeco(_cuts(), path, numero_cortes=CORTES, offsets=offsets)
+
+    span = _gnl_span(_record(path, 0), offsets)
+    values = np.frombuffer(span, dtype="<f8")
+    assert not values.any(), "numerically zero"
+    assert np.signbit(values).sum() == 0, "and positively signed, so the bytes are zero"
+    assert bytes.fromhex("0000000000000080") not in span
+
+
+def test_the_gnl_span_sits_at_positions_170_to_211_of_this_projects_records(
+    tmp_path: Path,
+) -> None:
+    """289 records, 7,796,064 bytes, NCOEF 212, and the 42 slots still addressed."""
+    offsets = _project_offsets()
+    path = tmp_path / "cortdeco.rv0"
+    cortes = PROJECT_NODES * PROJECT_PER_NODE
+    assert cortes == PROJECT_CORTES
+
+    count = write_cortdeco(_project_cuts(), path, numero_cortes=cortes, offsets=offsets)
+    assert count == PROJECT_RECORDS
+    assert path.stat().st_size == PROJECT_BYTES
+
+    for index in (0, PROJECT_CORTES // 2, PROJECT_CORTES):
+        record = _record(path, index)
+        coefficients = np.frombuffer(record, dtype="<f8", count=PROJECT_NCOEF, offset=4)
+        # pi_varm is non-zero everywhere, so the first zero coefficient locates
+        # the GNL block's start without being told where it is.
+        assert coefficients[PROJECT_PI_GNL - 1] != 0.0
+        assert int(np.flatnonzero(coefficients == 0.0)[0]) == PROJECT_PI_GNL
+        assert not coefficients[PROJECT_PI_GNL:].any()
+        assert len(coefficients[PROJECT_PI_GNL:]) == PROJECT_GNL_SLOTS
+        assert _gnl_span(record, offsets) == b"\x00" * (8 * PROJECT_GNL_SLOTS)
+
+
+def test_a_non_zero_gnl_coefficient_is_refused_naming_the_slot(tmp_path: Path) -> None:
+    """P14 is enforced, not merely declared: the manifest cannot be made to lie."""
+    offsets = _offsets()
+    cuts = _cuts()
+    cuts[1][2].pi_gnl[3] = -142_799.91
+    with pytest.raises(LayoutError) as error:
+        write_cortdeco(cuts, tmp_path / "cortdeco.rv0", numero_cortes=CORTES, offsets=offsets)
+
+    message = str(error.value)
+    assert "node 1 iteration 2" in message
+    assert "slot 3" in message
+    assert "ticket-016" in message, "the error must point at the follow-up"
+    assert not list(tmp_path.iterdir()), "nothing is written when the gate refuses"
+
+
+@pytest.mark.parametrize("dirty_record", [0, 7, RECORDS - 1])
+def test_a_dirty_byte_in_the_gnl_span_is_refused_naming_the_record_and_slot(
+    tmp_path: Path, dirty_record: int
+) -> None:
+    """Parametrized over the last record on purpose.
+
+    `RECORDS - 1` is the P13 duplicate, appended by a `serialize_cut` call
+    outside the `range(numero_cortes)` loop — so it is the one record whose P14
+    verification a checker iterating `range(records - 1)` would skip, and that
+    truncation survived the whole suite while only record 7 was covered.
+    """
+    offsets = _offsets()
+    path = tmp_path / "cortdeco.rv0"
+    write_cortdeco(_cuts(), path, numero_cortes=CORTES, offsets=offsets)
+
+    raw = bytearray(path.read_bytes())
+    dirty_slot = 2
+    raw[dirty_record * TAMANHO_CORTE + 4 + 8 * (offsets.pi_gnl + dirty_slot)] = 1
+    broken = tmp_path / "broken.rv0"
+    broken.write_bytes(bytes(raw))
+
+    with pytest.raises(LayoutError) as error:
+        assert_gnl_span_is_zero(broken, RECORDS, offsets)
+    message = str(error.value)
+    assert f"record {dirty_record}" in message
+    assert f"slot {dirty_slot}" in message
+    assert f"position {offsets.pi_gnl + dirty_slot}" in message
+    assert "P14" in message
+
+
+def test_the_gnl_span_check_runs_before_the_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file whose GNL span is dirty must never appear at the destination."""
+    destination = tmp_path / "cortdeco.rv0"
+    observed: dict[str, object] = {}
+
+    def spy(path: Path, records: int, offsets: CutBlockOffsets) -> None:
+        observed["checked"] = path.name
+        observed["records"] = records
+        observed["destination_existed"] = destination.exists()
+        raise LayoutError("simulated dirty GNL span")
+
+    monkeypatch.setattr(cortdeco_writer, "assert_gnl_span_is_zero", spy)
+    with pytest.raises(LayoutError, match="simulated dirty GNL span"):
+        write_cortdeco(_cuts(), destination, numero_cortes=CORTES, offsets=_offsets())
+
+    assert observed["checked"] == "cortdeco.rv0.partial"
+    assert observed["records"] == RECORDS
+    assert observed["destination_existed"] is False
+    assert not list(tmp_path.iterdir()), "the partial file must be cleaned up"
+
+
+def test_premise_p14_is_logged_once_per_run(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Once per call, which is the honest maximum until epic-06 gives the package
+    a single call site (the caveat ticket-008 recorded as item C8)."""
+    offsets = _project_offsets()
+    with caplog.at_level(logging.WARNING, logger="conversor_fcf"):
+        write_cortdeco(
+            _project_cuts(),
+            tmp_path / "cortdeco.rv0",
+            numero_cortes=PROJECT_CORTES,
+            offsets=offsets,
+        )
+    warnings = [r.getMessage() for r in caplog.records if r.getMessage().startswith("premise P14:")]
+    assert len(warnings) == 1, "one per run, not one per record"
+
+    message = warnings[0]
+    # The exact affected span, so an auditor need not consult the code.
+    assert f"{PROJECT_GNL_SLOTS} slots" in message
+    assert f"positions {PROJECT_PI_GNL}-{PROJECT_GNL_LAST}" in message
+    assert f"{PROJECT_RECORDS} records" in message
+    assert f"NCOEF {PROJECT_NCOEF}" in message
+    assert f"{PROJECT_BYTES}-byte" in message
+    assert "ticket-016" in message
+    assert "DORMANT" in message and "P4" in message and "P5" in message
+
+
+def test_the_audit_log_reports_the_head_table(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`heads` has exactly one consumer, so nothing else can pin it.
+
+    The head table is what an auditor cross-checks against `mapcut` reg 1, and it
+    reaches the record only through this INFO line. Replacing the
+    `cut_head_indices` call with `tuple(range(n_nodes))` survived the whole
+    suite, because the P13 and P14 warnings were pinned to exact substrings while
+    the one field carrying real numbers was not.
+    """
+    with caplog.at_level(logging.INFO, logger="conversor_fcf"):
+        write_cortdeco(
+            _project_cuts(),
+            tmp_path / "cortdeco.rv0",
+            numero_cortes=PROJECT_CORTES,
+            offsets=_project_offsets(),
+        )
+    written = [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("wrote cortdeco")
+    ]
+    assert len(written) == 1
+
+    message = written[0]
+    assert f"heads={list(PROJECT_HEADS)}" in message, "the descending 1-based heads (J2)"
+    assert f"records={PROJECT_RECORDS}" in message
+    assert f"bytes={PROJECT_BYTES}" in message
+    assert f"ncoef={PROJECT_NCOEF}" in message

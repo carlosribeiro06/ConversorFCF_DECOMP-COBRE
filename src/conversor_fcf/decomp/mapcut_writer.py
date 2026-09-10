@@ -48,6 +48,8 @@ from conversor_fcf.decomp.layout import (
     LayoutError,
     assert_mapcut_layout,
     mapcut_record_count,
+    sync_directory,
+    write_durably,
 )
 from conversor_fcf.logging_setup import get_logger
 
@@ -285,9 +287,10 @@ def write_mapcut(header: MapcutHeader, path: Path) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".partial")
     try:
-        temporary.write_bytes(b"".join(records))
+        write_durably(temporary, b"".join(records))
         assert_mapcut_layout(temporary, header)
         os.replace(temporary, path)
+        sync_directory(path.parent)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
