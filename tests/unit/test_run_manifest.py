@@ -1,4 +1,5 @@
 import json
+import os
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import pytest
 
 from conversor_fcf import run_manifest as run_manifest_module
 from conversor_fcf.config import load_settings
+from conversor_fcf.decomp import layout
 from conversor_fcf.run_manifest import (
     PREMISES,
     build_run_manifest,
@@ -24,6 +26,8 @@ EXPECTED_KEYS = {
     "premises",
     "library_versions",
     "outputs",
+    "status",
+    "failed_step",
 }
 
 
@@ -43,8 +47,16 @@ def _manifest_payload(tmp_path: Path) -> dict[str, object]:
 
 
 def test_premises_are_numbered_contiguously_from_one() -> None:
-    assert len(PREMISES) == 14
-    assert [entry.split(":", 1)[0] for entry in PREMISES] == [f"P{n}" for n in range(1, 15)]
+    assert len(PREMISES) == 15
+    assert [entry.split(":", 1)[0] for entry in PREMISES] == [f"P{n}" for n in range(1, 16)]
+
+
+def test_premise_fifteen_names_the_evidenced_lead_time_and_both_candidate_formulas() -> None:
+    """The premise must say why guessing is refused, not just that it is."""
+    p15 = next(entry for entry in PREMISES if entry.startswith("P15:"))
+    assert "1608.0" in p15, "the one evidenced lead time"
+    assert "floor" in p15 and "round" in p15, "both candidate formulas must be named"
+    assert "2.5" in p15, "where the two formulas would diverge"
 
 
 def test_premise_eleven_names_every_zero_filled_reg_ten_field() -> None:
@@ -127,7 +139,7 @@ def test_no_premise_text_states_how_many_premises_there_are() -> None:
             assert count not in entry.lower(), f"{entry.split(':', 1)[0]} carries a count"
 
 
-def test_manifest_has_all_eight_top_level_keys(tmp_path: Path) -> None:
+def test_manifest_has_every_top_level_key(tmp_path: Path) -> None:
     assert set(_manifest_payload(tmp_path)) == EXPECTED_KEYS
 
 
@@ -181,3 +193,107 @@ def test_manifest_is_deterministic_apart_from_created_at(tmp_path: Path) -> None
     second = _manifest_payload(tmp_path / "b")
     del first["created_at"], second["created_at"]
     assert first == second
+
+
+# --- M7: status and failed_step ---------------------------------------------
+
+
+def test_the_default_manifest_reports_success_with_no_failed_step(tmp_path: Path) -> None:
+    payload = _manifest_payload(tmp_path)
+    assert payload["status"] == "ok"
+    assert payload["failed_step"] is None
+
+
+def test_a_failed_run_records_its_status_and_the_step_that_raised(tmp_path: Path) -> None:
+    settings = load_settings(TRACKED_SETTINGS)
+    manifest = build_run_manifest(
+        case_path=Path("/cases/x"),
+        revision="rv0",
+        settings=settings,
+        outputs={"mapcut": Path("output/mapcut.rv0")},
+        status="failed",
+        failed_step="write cortdeco",
+    )
+    path = tmp_path / "run_manifest.json"
+    write_run_manifest(manifest, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["failed_step"] == "write cortdeco"
+    # M7: outputs are still recorded, even though the run never reached the end.
+    assert payload["outputs"] == {"mapcut": "output/mapcut.rv0"}
+
+
+# --- atomicity ---------------------------------------------------------------
+
+
+def test_the_write_is_atomic(tmp_path: Path) -> None:
+    path = tmp_path / "nested" / "run_manifest.json"
+    settings = load_settings(TRACKED_SETTINGS)
+    manifest = build_run_manifest(
+        case_path=Path("/cases/x"), revision="rv0", settings=settings, outputs={}
+    )
+    write_run_manifest(manifest, path)
+    assert path.is_file()
+    assert not list(path.parent.glob("*.partial"))
+
+
+def test_the_payload_is_synced_before_the_rename_and_the_directory_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Durability, in the order that makes it durability rather than decoration.
+
+    The same idiom `cortdeco_writer` and `mapcut_writer` already use: `os.replace`
+    is atomic for readers but not against a machine crash, so the payload must
+    reach stable storage, and the rename's own directory entry after it, before
+    either writer or the manifest can be trusted to have really landed.
+    """
+    events: list[str] = []
+    real_replace = os.replace
+    real_write_durably = layout.write_durably
+    real_sync_directory = layout.sync_directory
+
+    def spy_write(target: Path, payload: bytes) -> None:
+        real_write_durably(target, payload)
+        events.append(f"fsync:{target.name}")
+
+    def spy_replace(source: object, destination: object) -> None:
+        events.append("replace")
+        real_replace(source, destination)  # type: ignore[arg-type]
+
+    def spy_sync_directory(target: Path) -> None:
+        real_sync_directory(target)
+        events.append("fsync:dir")
+
+    monkeypatch.setattr(run_manifest_module, "write_durably", spy_write)
+    monkeypatch.setattr(os, "replace", spy_replace)
+    monkeypatch.setattr(run_manifest_module, "sync_directory", spy_sync_directory)
+
+    path = tmp_path / "run_manifest.json"
+    settings = load_settings(TRACKED_SETTINGS)
+    manifest = build_run_manifest(
+        case_path=Path("/cases/x"), revision="rv0", settings=settings, outputs={}
+    )
+    write_run_manifest(manifest, path)
+
+    assert events == ["fsync:run_manifest.json.partial", "replace", "fsync:dir"]
+    assert path.is_file()
+
+
+def test_a_failure_between_write_and_rename_leaves_no_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "run_manifest.json"
+
+    def raising_replace(source: object, destination_: object) -> None:
+        raise OSError("simulated rename failure")
+
+    monkeypatch.setattr(os, "replace", raising_replace)
+    settings = load_settings(TRACKED_SETTINGS)
+    manifest = build_run_manifest(
+        case_path=Path("/cases/x"), revision="rv0", settings=settings, outputs={}
+    )
+    with pytest.raises(OSError, match="simulated rename failure"):
+        write_run_manifest(manifest, destination)
+
+    assert not destination.exists()
+    assert not list(tmp_path.iterdir()), "the partial file must be cleaned up"

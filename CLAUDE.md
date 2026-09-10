@@ -78,6 +78,13 @@ and do not "fix" code that looks wrong because it contradicts an intuition liste
 - `numero_cortes = numero_iteracoes × n_cut_building_nodes` (the reference: 438 = 73 × 6), and
   `mapcut` reg 1's cut heads descend as `head(j) = numero_cortes - j`, 1-based, zero for every
   non-cut-building node (the reference: `[438, 437, 436, 435, 434, 433]`).
+- **`write_mapcut` never validates `numero_cortes` against anything**, and `mapcut_record_count` does
+  not depend on it. That is why a `mapcut` declaring one cut count beside a `cortdeco` holding
+  another is constructible at all, and it is the whole reason the pipeline cross-checks the pair
+  after writing both. It also settles how to reproduce that failure: patching the header
+  `write_mapcut` receives works, while tampering `write_cortdeco`'s `numero_cortes` argument does
+  not — that fails inside `write_cortdeco`'s own "supplied cuts != numero_cortes" guard before
+  `cortdeco` is ever created.
 - `cortdeco`'s chain pointer at offset 0 is **1-based**, points to the same node's previous cut with
   a stride equal to the number of cut-building nodes, and 0 terminates. In the reference, exactly 6
   of 439 records carry 0 and the other 433 all sit at `own_1based - 6`, with no exceptions.
@@ -102,6 +109,13 @@ and do not "fix" code that looks wrong because it contradicts an intuition liste
   subindex 0 to 2026-04-01 and 1-5 to 2026-05-01, while pool 5 maps 0-4 to 2026-07-01 and 5 to
   2026-05-01. Keying a DECOMP stage axis off `subindex` scrambles it differently in every stage; key
   off `delivery_date`.
+- The **GNL lag month is not derivable** from the case, and premise P15 says so. Both anticipated
+  thermals declare `lead_time_hours = 1608.0` while the reference deck declares `lag_meses_gnl =
+  (2, 2)`, and 1608 / 730.5 = 2.2013 — so `floor` and `round` both fit that single data point and
+  first diverge at 2.5 (any fractional part of 0.5 or more). With one point the mapping from lead
+  time to lag month is undetermined, exactly like P14's reduction. `assert_gnl_lead_time_is_evidenced`
+  therefore refuses any other lead time instead of converting it. Do not "fix" this by deriving a
+  formula: a wrong lag month writes a structurally valid file that DESSEM reads without complaint.
 - Load-block hours differ **per stage**, not just in total. Stage 0 is 24/65/79, stages 1-4 are
   15/64/89, stage 5 is 12/61/95 and stage 6 is 51/226/323 (600 h, against 168 h elsewhere). The
   frequently repeated "24/65/79" is stage 0's split alone.

@@ -30,7 +30,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from conversor_fcf.cobre.entities import has_delivery_date, index_slots
-from conversor_fcf.cobre.inputs_reader import BlockInfo, BusInfo, StageInfo
+from conversor_fcf.cobre.inputs_reader import BlockInfo, BusInfo, StageInfo, ThermalInfo
 from conversor_fcf.cobre.policy_reader import (
     EntitySlotRecord,
     PolicyManifest,
@@ -50,6 +50,15 @@ DAYS_PER_YEAR = 365.25
 EXCLUDED_BUS_ID = 5
 EXCLUDED_BUS_NAME = "IV"
 SUBMARKET_COUNT = 5
+
+# Premise P15. The only `lead_time_hours` the lead-time-to-lag-month mapping is
+# evidenced for: the reference case's own two GNL plants both declare it, and
+# the reference deck declares lag_meses_gnl = (2, 2). 1608.0 / 730.5 = 2.2013;
+# floor and round both give 2 at that single point and first diverge at 2.5
+# (any fractional part of 0.5 or more), so one point cannot decide between
+# them - see assert_gnl_lead_time_is_evidenced.
+EVIDENCED_GNL_LEAD_TIME_HOURS = 1608.0
+EVIDENCED_GNL_LAG_MESES = 2
 
 _logger = get_logger("mapping")
 
@@ -239,6 +248,39 @@ def gnl_block_weights(blocks: Sequence[BlockInfo]) -> tuple[float, ...]:
     return tuple(block.hours / total for block in blocks)
 
 
+def assert_gnl_lead_time_is_evidenced(gnl_thermals: Sequence[ThermalInfo]) -> None:
+    """Refuse a GNL lead time the lag-month mapping has no evidence for (premise P15).
+
+    `lag_meses_gnl` is emitted as `EVIDENCED_GNL_LAG_MESES` (2) for every GNL
+    plant, and that value is evidenced only at `EVIDENCED_GNL_LEAD_TIME_HOURS`
+    (1608.0 h), the reference case's own lead time. `floor` and `round` both
+    map that single point to 2 and first diverge at 2.5 h/month boundaries
+    (any fractional part of 0.5 or more), so one evidenced point cannot
+    decide which formula generalizes - picking either would repeat the exact
+    error premise P14 exists to avoid: guessing at an unevidenced mapping and
+    shipping a structurally valid file that is silently wrong. Failing closed
+    here, in the shape of `assert_no_travel_time` (premise P3), is what turns
+    that into an escalation instead of a guess.
+    """
+    for thermal in gnl_thermals:
+        if thermal.lead_time_hours != EVIDENCED_GNL_LEAD_TIME_HOURS:
+            raise MappingError(
+                f"thermal {thermal.id} ({thermal.name}) declares lead_time_hours="
+                f"{thermal.lead_time_hours!r}, but the lead-time-to-lag-month mapping "
+                f"(lag_meses_gnl, premise P15) is evidenced only at "
+                f"{EVIDENCED_GNL_LEAD_TIME_HOURS} hours: floor and round both fit that single "
+                f"known point and first diverge at 2.5 (any fractional part of 0.5 or more), so "
+                f"this case cannot be converted without guessing at an unevidenced mapping. "
+                f"Escalate rather than pick a formula."
+            )
+    _logger.info(
+        "premise P15 holds: every GNL plant declares lead_time_hours=%s, the only value the "
+        "lag_meses_gnl=%d mapping is evidenced for",
+        EVIDENCED_GNL_LEAD_TIME_HOURS,
+        EVIDENCED_GNL_LAG_MESES,
+    )
+
+
 def delivery_slot_map(slots: Sequence[EntitySlotRecord]) -> dict[int, DeliveryGroup]:
     """Group anticipated-thermal positions by delivery month, per pool.
 
@@ -351,13 +393,27 @@ def tree_indices(manifest: PolicyManifest) -> tuple[int, ...]:
     return tuple(parents.get(node_id, node_id) + 1 for node_id in node_ids)
 
 
-def cut_building_pools(pools: Mapping[int, StageCutPool]) -> tuple[int, ...]:
+def cut_building_pools(
+    pools: Mapping[int, StageCutPool], expected_count: int | None = None
+) -> tuple[int, ...]:
     """The pools that actually built cuts, ascending (finding F8).
 
     A pool whose populated count merely equals its warm-start count carries only
     seeded cuts. That is the semantic rule; it coincides with `n_pools - 1` on the
     reference deck, and a disagreement is logged rather than silently preferred.
+
+    `expected_count` lets a caller supply the true `n_pools - 1` when it already
+    knows it from the manifest's own declared pool list, rather than have it
+    inferred from `len(pools)`. The inference is wrong whenever `pools` does not
+    hold every declared pool - the common case in this project's own pipeline,
+    which deliberately does not load the terminal pool by default - and a wrong
+    inference then warns on every ordinary run, which trains an auditor to
+    ignore warnings. Left `None`, the previous inferred behavior is unchanged,
+    so a caller that does pass the full pool set keeps exercising it exactly as
+    before.
     """
+    if not pools:
+        return ()
     selected = tuple(
         sorted(
             pool_id
@@ -365,9 +421,7 @@ def cut_building_pools(pools: Mapping[int, StageCutPool]) -> tuple[int, ...]:
             if pool.populated_count > pool.warm_start_count
         )
     )
-    if not pools:
-        return ()
-    expected = len(pools) - 1
+    expected = len(pools) - 1 if expected_count is None else expected_count
     if len(selected) != expected:
         _logger.warning(
             "cut-building pools by populated_count > warm_start_count is %s, %d pool(s), but "

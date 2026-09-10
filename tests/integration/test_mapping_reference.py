@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from conversor_fcf.cobre.inputs_reader import CaseInputs, read_case_inputs
+from conversor_fcf.cobre.inputs_reader import CaseInputs, anticipated_thermals, read_case_inputs
 from conversor_fcf.cobre.policy_reader import (
     PolicyManifest,
     StageCutPool,
@@ -21,6 +21,7 @@ from conversor_fcf.cobre.policy_reader import (
 )
 from conversor_fcf.mapping.rules import (
     MappingError,
+    assert_gnl_lead_time_is_evidenced,
     cut_building_pools,
     delivery_slot_map,
     discount_factors,
@@ -138,6 +139,17 @@ def test_block_weights_partition_every_stage_of_the_deck(inputs: CaseInputs) -> 
     assert gnl_block_weights(inputs.stages[0].blocks) == (24 / 168, 65 / 168, 79 / 168)
     assert gnl_block_weights(inputs.stages[1].blocks) == (15 / 168, 64 / 168, 89 / 168)
     assert gnl_block_weights(inputs.stages[6].blocks) == (51 / 600, 226 / 600, 323 / 600)
+
+
+def test_the_reference_gnl_plants_declare_the_evidenced_lead_time(inputs: CaseInputs) -> None:
+    """Premise P15: the reference case is exactly where the mapping is evidenced.
+
+    Both GNL plants (112, 113) declare `lead_time_hours = 1608.0`, which is the
+    single point `lag_meses_gnl = 2` is evidenced for.
+    """
+    gnl = anticipated_thermals(inputs)
+    assert len(gnl) == 2
+    assert_gnl_lead_time_is_evidenced(gnl)
 
 
 def test_hydro_codes_cover_every_reference_plant() -> None:

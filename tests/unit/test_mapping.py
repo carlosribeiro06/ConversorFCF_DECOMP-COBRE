@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from conversor_fcf.cobre.entities import DELIVERY_DATE_SENTINEL
-from conversor_fcf.cobre.inputs_reader import BlockInfo, BusInfo, StageInfo
+from conversor_fcf.cobre.inputs_reader import BlockInfo, BusInfo, StageInfo, ThermalInfo
 from conversor_fcf.cobre.policy_reader import (
     AffinePieceRecord,
     EntitySlotRecord,
@@ -19,8 +19,10 @@ from conversor_fcf.cobre.policy_reader import (
 from conversor_fcf.mapping.rules import (
     DAYS_PER_YEAR,
     DECOMP_COST_DIVISOR,
+    EVIDENCED_GNL_LEAD_TIME_HOURS,
     InflowLagAudit,
     MappingError,
+    assert_gnl_lead_time_is_evidenced,
     cut_building_pools,
     delivery_slot_map,
     discount_factors,
@@ -211,6 +213,42 @@ def test_block_weights_reject_an_empty_or_zero_stage() -> None:
         gnl_block_weights(())
     with pytest.raises(MappingError, match="positive value"):
         gnl_block_weights(_stage(0, "2026-04-25", "2026-05-02", (0.0, 0.0)).blocks)
+
+
+# --- premise P15 --------------------------------------------------------------
+
+
+def _gnl_thermal(thermal_id: int, name: str, lead_time_hours: float) -> ThermalInfo:
+    return ThermalInfo(id=thermal_id, name=name, bus_id=0, lead_time_hours=lead_time_hours)
+
+
+def test_the_evidenced_lead_time_is_accepted() -> None:
+    assert_gnl_lead_time_is_evidenced(
+        [
+            _gnl_thermal(112, "SANTA CRUZ", EVIDENCED_GNL_LEAD_TIME_HOURS),
+            _gnl_thermal(113, "PSERGIPE I", EVIDENCED_GNL_LEAD_TIME_HOURS),
+        ]
+    )
+
+
+def test_no_gnl_plants_is_vacuously_accepted() -> None:
+    assert_gnl_lead_time_is_evidenced([])
+
+
+def test_a_differing_lead_time_is_refused_by_name() -> None:
+    with pytest.raises(MappingError, match=r"lead_time_hours=1600\.0"):
+        assert_gnl_lead_time_is_evidenced([_gnl_thermal(112, "SANTA CRUZ", 1600.0)])
+
+
+def test_two_different_lead_times_across_gnl_plants_are_refused() -> None:
+    """The first plant matching the evidenced value does not excuse a differing sibling."""
+    with pytest.raises(MappingError, match="PSERGIPE"):
+        assert_gnl_lead_time_is_evidenced(
+            [
+                _gnl_thermal(112, "SANTA CRUZ", EVIDENCED_GNL_LEAD_TIME_HOURS),
+                _gnl_thermal(113, "PSERGIPE I", 1200.0),
+            ]
+        )
 
 
 # --- premise P9 --------------------------------------------------------------

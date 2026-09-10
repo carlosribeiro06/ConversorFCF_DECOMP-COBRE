@@ -25,11 +25,7 @@ import numpy as np
 import pytest
 from idecomp.decomp.mapcut import Mapcut
 
-from conversor_fcf.cobre.inputs_reader import (
-    CaseInputs,
-    anticipated_thermals,
-    read_case_inputs,
-)
+from conversor_fcf.cobre.inputs_reader import CaseInputs, read_case_inputs
 from conversor_fcf.cobre.policy_reader import (
     EntitySlotRecord,
     PolicyManifest,
@@ -43,17 +39,13 @@ from conversor_fcf.decomp.layout import (
     LayoutError,
     assert_mapcut_layout,
     assert_no_travel_time,
-    cut_head_indices,
     derive_n_utv,
     mapcut_record_count,
 )
 from conversor_fcf.decomp.mapcut_writer import MapcutHeader, write_mapcut
-from conversor_fcf.mapping.rules import (
-    discount_factors,
-    load_hydro_codes,
-    submarket_for_bus,
-    tree_indices,
-)
+from conversor_fcf.decomp.reader import read_mapcut
+from conversor_fcf.mapping.rules import load_hydro_codes
+from conversor_fcf.pipeline import assemble_mapcut_header
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE_CASE = Path("/home/carlosribeiro/git/DEC_ONS_052026_RV0_VE_CONVERTIDO")
@@ -119,56 +111,55 @@ def trunk_slots() -> Sequence[EntitySlotRecord]:
 
 
 @pytest.fixture(scope="module")
-def header(
-    inputs: CaseInputs, manifest: PolicyManifest, trunk_slots: Sequence[EntitySlotRecord]
-) -> MapcutHeader:
-    """Assemble a header from the real case.
-
-    Building this from a Cobre case is `ticket-012`'s job; this local assembly
-    exists only so `ticket-007` can be verified against real values.
-    """
+def trunk_pool_ids(manifest: PolicyManifest) -> tuple[int, ...]:
+    """Every declared pool but the last, ascending - premise P7's own definition."""
     pool_ids = sorted(nodes_by_pool(manifest))
-    trunk = pool_ids[:-1]
-    total_cuts = len(trunk) * manifest.completed_iterations
-    node_count = len(manifest.nodes)
-    # Requirement 1: consumed from layout.py rather than derived here, so mapcut
-    # reg 1's heads and cortdeco's chain origins cannot drift apart.
-    heads = cut_head_indices(total_cuts, len(trunk), node_count)
+    return tuple(pool_ids[:-1])
 
-    first_node_by_stage: dict[int, int] = {}
-    for node in manifest.nodes:
-        first_node_by_stage.setdefault(node.stage_id, node.id + 1)
 
-    gnl = anticipated_thermals(inputs)
-    start = date.fromisoformat(inputs.stages[0].start_date)
-    return MapcutHeader(
-        numero_iteracoes=manifest.completed_iterations,
-        numero_cortes=total_cuts,
-        numero_submercados=5,
-        numero_uhes=len(inputs.hydros),
-        numero_cenarios=node_count,
-        numero_estagios=manifest.num_stages,
-        numero_semanas=len(trunk),
-        # Derived from the case, never assumed: premise P3 is a claim about the
-        # input. max_lag is left to its default, since there is no axis to bound.
-        n_utv=derive_n_utv(trunk_slots),
-        dia=start.day,
-        mes=start.month,
-        ano=start.year,
-        codigos_uhes=load_hydro_codes(REPO_ROOT / "decomp_hydro_codes.json"),
-        codigos_uhes_jusante=tuple(
-            (hydro.downstream_id + 1) if hydro.downstream_id is not None else 0
-            for hydro in inputs.hydros
-        ),
-        indice_no_arvore=tree_indices(manifest),
-        indice_primeiro_no_estagio=tuple(first_node_by_stage.values()),
-        patamares_por_estagio=tuple(len(stage.blocks) for stage in inputs.stages),
-        registro_ultimo_corte_no=heads,
-        codigos_submercados_gnl=tuple(submarket_for_bus(t.bus_id) for t in gnl),
-        lag_meses_gnl=tuple(2 for _ in gnl),
-        patamares_gnl=tuple(len(inputs.stages[0].blocks) for _ in gnl),
-        taxa_desconto=discount_factors(inputs.stages, inputs.annual_discount_rate),
-    )
+@pytest.fixture(scope="module")
+def hydro_codes() -> tuple[int, ...]:
+    return load_hydro_codes(REPO_ROOT / "decomp_hydro_codes.json")
+
+
+@pytest.fixture(scope="module")
+def header(
+    inputs: CaseInputs,
+    manifest: PolicyManifest,
+    trunk_slots: Sequence[EntitySlotRecord],
+    hydro_codes: tuple[int, ...],
+    trunk_pool_ids: tuple[int, ...],
+) -> MapcutHeader:
+    """The pipeline's own header assembly (Requirement 4).
+
+    `ticket-012` extracted this from what used to be a local, hand-rolled
+    assembly here - `pipeline.assemble_mapcut_header` - so the header this test
+    verifies field by field is the same header a real run emits, not a parallel
+    reimplementation that could drift from it.
+    """
+    return assemble_mapcut_header(inputs, manifest, trunk_slots, hydro_codes, trunk_pool_ids)
+
+
+@needs_reference_deck
+def test_the_pipeline_header_matches_the_reference_deck_on_its_unwitnessed_fields(
+    header: MapcutHeader,
+) -> None:
+    """Requirement 4's witness for the three `MapcutHeader` fields nothing else
+    in this file anchors: `codigos_uhes_jusante`, `lag_meses_gnl` and
+    `patamares_gnl`. Read from the REFERENCE `mapcut.rv0`'s own bytes, never
+    recomputed from the same Cobre inputs the pipeline itself reads.
+
+    The previous version of this test built `expected = MapcutHeader(...)` as
+    a line-for-line copy of `assemble_mapcut_header`'s own body, so it agreed
+    with the implementation by construction despite its docstring's claim of
+    a second, independent computation - every other field this file's other
+    tests already anchor through `readback` (idecomp, a different code path)
+    or `REFERENCE_MAPCUT`'s own bytes directly.
+    """
+    reference = read_mapcut(REFERENCE_MAPCUT)
+    assert header.codigos_uhes_jusante == reference.codigos_uhes_jusante
+    assert header.lag_meses_gnl == reference.lag_meses_gnl == (2, 2)
+    assert header.patamares_gnl == reference.patamares_gnl == (3, 3)
 
 
 @pytest.fixture(scope="module")

@@ -14,6 +14,7 @@ rule the code still carries: naming the dormancy is what distinguishes the two.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -23,6 +24,7 @@ from typing import Any
 
 from conversor_fcf import __version__
 from conversor_fcf.config import Settings
+from conversor_fcf.decomp.layout import sync_directory, write_durably
 
 _P1 = "P1: mapcut record indices 4-17 emitted as zeros; WARNING logged; deferred to ticket-015"
 _P2 = (
@@ -108,6 +110,16 @@ _P14 = (
     "while this premise holds"
 )
 
+_P15 = (
+    "P15: mapcut reg 9's lag_meses_gnl emitted as 2 for every GNL plant. Evidenced only for the "
+    "reference case's own lead_time_hours of 1608.0 (1608.0/730.5 = 2.2013): floor and round "
+    "both map that single known point to 2, and the two formulas first diverge at 2.5 (any "
+    "fractional part of 0.5 or more), so one evidenced point cannot decide between them. "
+    "Guessing either would repeat the error premise P14 exists to avoid. "
+    "assert_gnl_lead_time_is_evidenced refuses any GNL plant whose lead_time_hours differs from "
+    "1608.0 rather than guess at an unevidenced case."
+)
+
 PREMISES: tuple[str, ...] = (
     _P1,
     _P2,
@@ -123,6 +135,7 @@ PREMISES: tuple[str, ...] = (
     _P12,
     _P13,
     _P14,
+    _P15,
 )
 
 _TRACKED_LIBRARIES = ("numpy", "pandas", "flatbuffers")
@@ -130,7 +143,13 @@ _TRACKED_LIBRARIES = ("numpy", "pandas", "flatbuffers")
 
 @dataclass(frozen=True)
 class RunManifest:
-    """Provenance of a single conversion run."""
+    """Provenance of a single conversion run.
+
+    `status` and `failed_step` (M7) make the manifest a real audit record for a
+    failed run, not only a successful one: a run that raised must still leave a
+    trace of which step it reached, because a missing manifest tells an auditor
+    nothing about what was attempted.
+    """
 
     tool_version: str
     created_at: str
@@ -140,6 +159,8 @@ class RunManifest:
     premises: tuple[str, ...]
     library_versions: dict[str, str]
     outputs: dict[str, str]
+    status: str
+    failed_step: str | None
 
 
 def _library_versions() -> dict[str, str]:
@@ -157,8 +178,15 @@ def build_run_manifest(
     revision: str,
     settings: Settings,
     outputs: Mapping[str, Path],
+    status: str = "ok",
+    failed_step: str | None = None,
 ) -> RunManifest:
-    """Assemble the manifest for a run over `case_path` at `revision`."""
+    """Assemble the manifest for a run over `case_path` at `revision`.
+
+    `status`/`failed_step` default to the success case, so every existing caller
+    that predates M7 keeps building an `"ok"` manifest unchanged; the pipeline's
+    failure path passes `status="failed"` and the `log_step` label that raised.
+    """
     return RunManifest(
         tool_version=__version__,
         created_at=datetime.now(UTC).isoformat(),
@@ -168,11 +196,26 @@ def build_run_manifest(
         premises=PREMISES,
         library_versions=_library_versions(),
         outputs={name: str(path) for name, path in outputs.items()},
+        status=status,
+        failed_step=failed_step,
     )
 
 
 def write_run_manifest(manifest: RunManifest, path: Path) -> None:
-    """Write the manifest as deterministic, key-sorted JSON."""
+    """Write the manifest as deterministic, key-sorted JSON, atomically (M7).
+
+    `.partial`-then-rename, the same idiom the two binary writers use: a
+    manifest is a production artifact too, and a truncated one is an unreadable
+    audit record, which matters most on exactly the failure path this write
+    also serves.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(asdict(manifest), indent=2, sort_keys=True)
-    path.write_text(payload + "\n", encoding="utf-8")
+    payload = (json.dumps(asdict(manifest), indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temporary = path.with_name(path.name + ".partial")
+    try:
+        write_durably(temporary, payload)
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
