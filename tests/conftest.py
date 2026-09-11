@@ -2,8 +2,10 @@
 
 Two hooks and nothing else. `reference.py` carries every filesystem- and
 `pytest`-independent decision; this file only resolves the live filesystem
-and environment, calls `unverified_reason`, and reacts - short enough that
-reading it proves it cannot raise.
+and environment, calls into it, and reacts. Nothing here propagates an
+exception: the single call that can raise, `reference_root`, is caught and
+reported like any other unverified session, because an exception escaping a
+session hook aborts the whole test report.
 """
 
 from __future__ import annotations
@@ -14,23 +16,27 @@ from typing import TYPE_CHECKING
 import pytest
 from reference import (
     ALLOW_MISSING_VAR,
+    DEFAULT_REFERENCE_ROOT,
     LEGACY_HARDCODED_MODULES,
+    ReferenceRootError,
     reference_artifacts,
     reference_root,
+    unresolvable_root_reason,
     unverified_reason,
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from _pytest.terminal import TerminalReporter
+    from reference import ReferenceArtifacts
 
 pytest_plugins = ["pytester"]
 
 
-def _session_reason() -> tuple[str | None, bool]:
-    """The terminal-summary text (or `None`) and whether the opt-out is set."""
-    root = reference_root()
-    artifacts = reference_artifacts(root)
-    absent = [
+def _absent(artifacts: ReferenceArtifacts) -> list[Path]:
+    """Which of the three artifacts are missing, in declaration order."""
+    return [
         path
         for path, present in (
             (artifacts.case, artifacts.case.is_dir()),
@@ -39,8 +45,31 @@ def _session_reason() -> tuple[str | None, bool]:
         )
         if not present
     ]
+
+
+def _session_reason() -> tuple[str | None, bool]:
+    """The terminal-summary text (or `None`) and whether the opt-out is set."""
     allow_missing = os.environ.get(ALLOW_MISSING_VAR) == "1"
-    reason = unverified_reason(root, absent, allow_missing, LEGACY_HARDCODED_MODULES)
+    try:
+        root = reference_root()
+    except ReferenceRootError as error:
+        return unresolvable_root_reason(str(error), allow_missing), allow_missing
+
+    absent = _absent(reference_artifacts(root))
+    # Where the eleven legacy modules actually look, which decides whether the
+    # summary may claim every reference-gated test skipped.
+    legacy_root_absent = (
+        absent
+        if root == DEFAULT_REFERENCE_ROOT
+        else _absent(reference_artifacts(DEFAULT_REFERENCE_ROOT))
+    )
+    reason = unverified_reason(
+        root,
+        absent,
+        allow_missing,
+        LEGACY_HARDCODED_MODULES,
+        legacy_root_absent=legacy_root_absent,
+    )
     return reason, allow_missing
 
 

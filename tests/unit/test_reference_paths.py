@@ -26,8 +26,10 @@ from reference import (
     MAPCUT_NAME,
     REFERENCE_ROOT_VAR,
     ReferenceArtifacts,
+    ReferenceRootError,
     reference_artifacts,
     reference_root,
+    unresolvable_root_reason,
     unverified_reason,
 )
 
@@ -86,6 +88,27 @@ def test_reference_root_reads_an_explicit_override(monkeypatch: pytest.MonkeyPat
 def test_reference_root_expands_a_tilde_in_the_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(REFERENCE_ROOT_VAR, "~/decks")
     assert reference_root() == (Path.home() / "decks").resolve()
+
+
+def test_an_override_naming_a_user_with_no_home_raises_rather_than_escaping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`Path.expanduser` raises `RuntimeError` for a `~user` with no passwd entry.
+
+    Unconverted, that escapes both session hooks and takes the whole test
+    report with it - pytest catches only `exit.Exception` there.
+    """
+    monkeypatch.setenv(REFERENCE_ROOT_VAR, "~nosuchuser42/decks")
+    with pytest.raises(ReferenceRootError, match=REFERENCE_ROOT_VAR):
+        reference_root()
+
+
+def test_an_unresolvable_override_reports_as_unverified_and_names_both_vars() -> None:
+    reason = unresolvable_root_reason("root is nonsense", allow_missing=False)
+    assert "root is nonsense" in reason
+    assert "verified nothing reference-dependent" in reason
+    assert REFERENCE_ROOT_VAR in reason
+    assert ALLOW_MISSING_VAR in reason
 
 
 def test_reference_artifacts_use_the_documented_names() -> None:
@@ -154,6 +177,43 @@ def test_a_relocated_root_with_legacy_modules_is_unverified_even_when_all_presen
     assert reason is not None
     assert str(len(LEGACY_HARDCODED_MODULES)) in reason
     assert "ticket-022" in reason
+
+
+def test_a_relocated_root_whose_legacy_modules_ran_does_not_claim_everything_skipped() -> None:
+    """The summary must not say a verified session verified nothing.
+
+    With the default root populated, the eleven modules that hardcode it RUN
+    against it and the override is simply ignored: nothing skips. Claiming
+    "every reference-gated test skipped" is then false, and a false line in
+    an audit trail is the defect class this whole epic exists to remove. The
+    status stays 6 regardless - the override was still not honored.
+    """
+    reason = unverified_reason(
+        Path("/srv/decks"),
+        [],
+        allow_missing=False,
+        legacy_modules=LEGACY_HARDCODED_MODULES,
+        legacy_root_absent=[],
+    )
+    assert reason is not None
+    assert "every reference-gated test skipped" not in reason
+    assert "verified nothing" not in reason
+    assert "ran against the default root instead" in reason
+    assert "ticket-022" in reason
+
+
+def test_a_relocated_root_whose_legacy_modules_also_skipped_says_so() -> None:
+    """The mirror case: nothing ran anywhere, so the claim is true and is made."""
+    reason = unverified_reason(
+        Path("/srv/decks"),
+        [],
+        allow_missing=False,
+        legacy_modules=LEGACY_HARDCODED_MODULES,
+        legacy_root_absent=[DEFAULT_REFERENCE_ROOT / CORTDECO_NAME],
+    )
+    assert reason is not None
+    assert "every reference-gated test skipped" in reason
+    assert "skip there regardless" in reason
 
 
 def test_the_default_root_is_unaffected_by_a_non_empty_legacy_list() -> None:
@@ -266,3 +326,26 @@ def test_the_opt_out_moves_the_status_without_silencing_the_report(
     assert result.ret == 0
     combined = str(result.stdout)
     assert str(root / CORTDECO_NAME) in combined
+
+
+def test_an_unresolvable_override_still_reports_the_outcomes_it_ran(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requirement: a malformed override degrades to unverified, never to a traceback.
+
+    Before the guard caught it, the `RuntimeError` from `expanduser` escaped
+    both hooks: the `1 passed` summary never printed and the exit status was
+    1, indistinguishable from a real test failure.
+    """
+    monkeypatch.setenv(REFERENCE_ROOT_VAR, "~nosuchuser42/decks")
+    monkeypatch.delenv(ALLOW_MISSING_VAR, raising=False)
+    _install_wiring(pytester)
+
+    result = pytester.runpytest_subprocess()
+
+    result.assert_outcomes(passed=1)
+    assert result.ret == 6
+    combined = str(result.stdout)
+    assert "Traceback" not in combined
+    assert REFERENCE_ROOT_VAR in combined
+    assert ALLOW_MISSING_VAR in combined

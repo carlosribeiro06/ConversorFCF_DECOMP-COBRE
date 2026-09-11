@@ -407,19 +407,35 @@ session-level check on top of that, unrelated to the converter CLI's own exit co
 
 When any of the three artifacts is absent at the resolved root — or the root is overridden while
 those eleven modules still hardcode the default one (`ticket-022`) — `pytest -q` prints a summary
-naming the resolved root, every absent artifact and both variables above, then exits **6**:
+naming the resolved root, every absent artifact and both variables above, then exits **6**.
+
+The block below is **captured output**, not a reconstruction. Read the second paragraph: those
+eleven modules look at the default root rather than at the override, so on this machine — whose
+default root is populated — they *ran*, and the summary says which root was actually verified
+instead of claiming that nothing was. Had the default root been empty too, that paragraph would
+end `skip there regardless` and a further one would state that the session verified nothing. The
+paragraph disappears entirely once `ticket-022` converts the eleven modules.
 
 ```bash
 $ CONVERSOR_FCF_REFERENCE_ROOT=/srv/decks pytest -q
 ...
-1 reference artifact(s) absent at /srv/decks: /srv/decks/cortdeco.rv0.
-This session verified nothing reference-dependent: every reference-gated test skipped, and
-pytest's own exit status does not distinguish that from having run.
+3 reference artifact(s) absent at /srv/decks: /srv/decks/DEC_ONS_052026_RV0_VE_CONVERTIDO,
+/srv/decks/mapcut.rv0, /srv/decks/cortdeco.rv0.
+CONVERSOR_FCF_REFERENCE_ROOT points elsewhere while 11 module(s) still hardcode the default
+root, unaffected by it, and ran against the default root instead, so this session verified that
+root and not /srv/decks (the ticket-022 follow-up sweep): tests/integration/conftest.py,
+tests/integration/test_cortdeco_assembly.py, ... (all eleven named in full)
 Set CONVERSOR_FCF_ALLOW_MISSING_REFERENCE=1 to accept this and keep exit 0, or point
 CONVERSOR_FCF_REFERENCE_ROOT at a directory holding all three artifacts.
 $ echo $?
 6
 ```
+
+A malformed override — a `~user` with no passwd entry, say — degrades to the same unverified
+report rather than raising out of the session hook: the summary names the variable and the
+resolution failure, the outcomes that did run are still printed, and the status is **6**. An
+uncaught `RuntimeError` there would take the whole test report with it and exit `1`, which is
+indistinguishable from a genuine test failure.
 
 Git conventions: work on a feature branch, never commit to `main`, never force-push, and **confirm
 with the user before every commit and every push**. Use conventional commits (`feat:`, `fix:`,

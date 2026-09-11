@@ -49,6 +49,10 @@ LEGACY_HARDCODED_MODULES: frozenset[str] = frozenset(
 )
 
 
+class ReferenceRootError(Exception):
+    """The reference-root override names something that cannot be resolved."""
+
+
 @dataclass(frozen=True)
 class ReferenceArtifacts:
     """The three artifacts a reference-dependent test needs, as children of a root."""
@@ -63,11 +67,21 @@ def reference_root() -> Path:
 
     `CONVERSOR_FCF_REFERENCE_ROOT` when set - `~` expanded, then resolved -
     else `DEFAULT_REFERENCE_ROOT` unchanged.
+
+    Raises `ReferenceRootError` when the override cannot be resolved at all:
+    `Path.expanduser` raises `RuntimeError` for a `~user` with no passwd
+    entry, and resolution can raise `OSError`. Letting either escape would
+    abort the `pytest` session hook that calls this and take the whole test
+    report with it, so the caller converts it into an unverified session.
     """
     override = os.environ.get(REFERENCE_ROOT_VAR)
     if override is None:
         return DEFAULT_REFERENCE_ROOT
-    return Path(override).expanduser().resolve()
+    try:
+        return Path(override).expanduser().resolve()
+    except (RuntimeError, OSError) as error:
+        message = f"{REFERENCE_ROOT_VAR}={override!r} cannot be resolved: {error}"
+        raise ReferenceRootError(message) from error
 
 
 def reference_artifacts(root: Path) -> ReferenceArtifacts:
@@ -79,11 +93,46 @@ def reference_artifacts(root: Path) -> ReferenceArtifacts:
     )
 
 
+def _negotiable_status_tail(allow_missing: bool) -> str:
+    """The closing sentence, naming whichever of the two variables applies."""
+    if allow_missing:
+        return (
+            f"{ALLOW_MISSING_VAR}=1 is set: exit status left at 0 despite the above. Unset "
+            f"it, or point {REFERENCE_ROOT_VAR} at a directory holding all three artifacts, "
+            f"to require them again."
+        )
+    return (
+        f"Set {ALLOW_MISSING_VAR}=1 to accept this and keep exit 0, or point "
+        f"{REFERENCE_ROOT_VAR} at a directory holding all three artifacts."
+    )
+
+
+def unresolvable_root_reason(message: str, allow_missing: bool) -> str:
+    """The terminal-summary text for an override that cannot be resolved.
+
+    A session whose root cannot even be computed has verified nothing
+    reference-dependent, so it reports like any other unverified one. Pure,
+    for the same reason `unverified_reason` is.
+    """
+    return "\n".join(
+        (
+            message,
+            (
+                "This session verified nothing reference-dependent: the override names a root "
+                "that cannot be resolved, so no artifact could be looked for under it."
+            ),
+            _negotiable_status_tail(allow_missing),
+        )
+    )
+
+
 def unverified_reason(
     root: Path,
     absent: Sequence[Path],
     allow_missing: bool,
     legacy_modules: frozenset[str],
+    *,
+    legacy_root_absent: Sequence[Path] = (),
 ) -> str | None:
     """The terminal-summary text for an unverified session, or `None`.
 
@@ -93,38 +142,45 @@ def unverified_reason(
     threaded in rather than read as a global so a test can pass an empty set
     for the counterfactual. A relocated root (one that differs from
     `DEFAULT_REFERENCE_ROOT`) with a non-empty `legacy_modules` is unverified
-    even with every artifact present at that root, because those modules
-    would still look at the default root and skip there regardless.
+    even with every artifact present at that root, because those modules look
+    at the default root rather than at the override.
+
+    `legacy_root_absent` is what is missing at `DEFAULT_REFERENCE_ROOT`, where
+    those modules actually look, and it decides what the summary may claim.
+    Empty means they ran there, so the session verified the default root
+    instead of `root`: it did not skip everything, and the "verified nothing"
+    sentence would be false. That sentence is emitted only when nothing ran
+    anywhere. The status stays negotiable either way - a relocated root did
+    not verify what the operator asked for, whichever root did get read.
     """
     findings: list[str] = []
     if absent:
         named = ", ".join(str(path) for path in absent)
         findings.append(f"{len(absent)} reference artifact(s) absent at {root}: {named}.")
 
-    if root != DEFAULT_REFERENCE_ROOT and legacy_modules:
+    relocated = root != DEFAULT_REFERENCE_ROOT and bool(legacy_modules)
+    legacy_ran = relocated and not legacy_root_absent
+    if relocated:
         named_modules = ", ".join(sorted(legacy_modules))
+        outcome = (
+            f"ran against the default root instead, so this session verified that root and not "
+            f"{root}"
+            if legacy_ran
+            else "skip there regardless"
+        )
         findings.append(
             f"{REFERENCE_ROOT_VAR} points elsewhere while {len(legacy_modules)} module(s) "
-            f"still hardcode the default root and skip there regardless, unaffected by it "
+            f"still hardcode the default root, unaffected by it, and {outcome} "
             f"(the ticket-022 follow-up sweep): {named_modules}."
         )
 
     if not findings:
         return None
 
-    findings.append(
-        "This session verified nothing reference-dependent: every reference-gated test "
-        "skipped, and pytest's own exit status does not distinguish that from having run."
-    )
-    if allow_missing:
+    if not legacy_ran:
         findings.append(
-            f"{ALLOW_MISSING_VAR}=1 is set: exit status left at 0 despite the above. Unset "
-            f"it, or point {REFERENCE_ROOT_VAR} at a directory holding all three artifacts, "
-            f"to require them again."
+            "This session verified nothing reference-dependent: every reference-gated test "
+            "skipped, and pytest's own exit status does not distinguish that from having run."
         )
-    else:
-        findings.append(
-            f"Set {ALLOW_MISSING_VAR}=1 to accept this and keep exit 0, or point "
-            f"{REFERENCE_ROOT_VAR} at a directory holding all three artifacts."
-        )
+    findings.append(_negotiable_status_tail(allow_missing))
     return "\n".join(findings)
