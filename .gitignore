@@ -1,0 +1,54 @@
+# --- Planning and specification artifacts (local only, never versioned) ---
+plans/
+plans-lite/
+conversor-fcf.md
+.implementation-state.json
+.project-journey.json
+
+# --- Local agent configuration ---
+.claude/settings.local.json
+
+# --- Python bytecode ---
+# Note: keeps the vendored Cobre/**/*.py sources tracked; only bytecode is ignored.
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Packaging / build ---
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Tooling caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Converter output artifacts ---
+# Generated mapcut/cortdeco binaries and the readable CSV mirrors. The CLI writes
+# to <case>/output/decomp_fcf/ by default, outside this repository; these patterns
+# only guard against in-repo test runs.
+mapcut.rv*
+cortdeco.rv*
+output/
+*.csv.gz
+
+# --- Runtime logs (audit logs are written outside the repo by default) ---
+logs/
+*.log
+
+# --- Editor / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
