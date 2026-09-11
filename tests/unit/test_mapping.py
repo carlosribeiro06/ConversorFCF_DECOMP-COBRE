@@ -26,6 +26,7 @@ from conversor_fcf.mapping.rules import (
     cut_building_pools,
     delivery_slot_map,
     discount_factors,
+    first_node_per_stage,
     gnl_block_weights,
     hydro_code_for_position,
     inflow_lag_drop_audit,
@@ -487,6 +488,85 @@ def test_tree_indices_make_the_root_its_own_parent() -> None:
     assert tree_indices(manifest) == (1, 1, 2, 2)
 
 
+# --- ticket-019: order by stage_id, not by node-list order ------------------
+
+
+def test_first_node_per_stage_rejects_a_descending_stage_sequence() -> None:
+    """A stage axis only advances; a manifest that disagrees has no correct answer.
+
+    Node ids in list order are (0, 1, 2, 3) with stage_id order (1, 0, 1, 0):
+    stage_id decreases from node 0 to node 1, so this is unrepresentable
+    rather than an input with a right answer — the epic-07 boundary review's
+    finding that amended this ticket's own C1, which originally asserted
+    `(2, 1)` here.
+    """
+    manifest = _manifest((0, 1, 2, 3), (), stage_ids=(1, 0, 1, 0))
+    with pytest.raises(MappingError, match="non-decreasing"):
+        first_node_per_stage(manifest)
+
+
+def test_first_node_per_stage_rejects_an_interleaved_stage_sequence() -> None:
+    """The gap check alone does not catch this: distinct stage ids are still
+    the contiguous range `0..2`, but stage 0 is revisited after stage 1.
+
+    The exact input the boundary review's finding used:
+    `tree_indices` on this manifest is `(1, 1, 2, 3, 4, 5)` and, pre-fix,
+    `first_node_per_stage` returned `(1, 2, 3)` with no raise — reading stage
+    2 as owning nodes 3 through 6, a wrong tree in a structurally valid file.
+    """
+    manifest = _manifest((0, 1, 2, 3, 4, 5), (), stage_ids=(0, 1, 2, 0, 1, 2))
+    with pytest.raises(MappingError, match="non-decreasing"):
+        first_node_per_stage(manifest)
+
+
+def test_first_node_per_stage_rejects_a_stage_gap() -> None:
+    """`indice_primeiro_no_estagio` is positional: a gap shifts every later entry.
+
+    `(0, 1, 3, 3)` is non-decreasing, so the non-decreasing guard above does
+    not catch it either; the two guards are independent, each catching what
+    the other misses.
+    """
+    manifest = _manifest((0, 1, 2, 3), (), stage_ids=(0, 1, 3, 3))
+    with pytest.raises(MappingError, match=r"got \[0, 1, 3\]"):
+        first_node_per_stage(manifest)
+    with pytest.raises(MappingError, match=r"range 0\.\.2"):
+        first_node_per_stage(manifest)
+
+
+def test_first_node_per_stage_rejects_non_contiguous_node_ids_on_its_own() -> None:
+    """Asserted here, not inherited from `tree_indices` via evaluation order.
+
+    Calls `first_node_per_stage` directly, without `tree_indices` ever
+    running, so this pins the guard as this function's own rather than a
+    property it happens to receive from a caller that runs the other check
+    first.
+    """
+    manifest = _manifest((10, 11, 12), (), stage_ids=(0, 1, 2))
+    with pytest.raises(MappingError, match="contiguous range 0..2"):
+        first_node_per_stage(manifest)
+
+
+def test_first_node_per_stage_orders_the_result_by_ascending_stage() -> None:
+    """The property this function is for, on an input that is representable:
+    each stage holds two nodes, and the lowest id within a stage — not the
+    node list's own order — decides that stage's entry.
+    """
+    manifest = _manifest((0, 1, 2, 3, 4, 5), (), stage_ids=(0, 0, 1, 1, 2, 2))
+    assert first_node_per_stage(manifest) == (1, 3, 5)
+
+
+def test_first_node_per_stage_on_a_reference_shaped_manifest() -> None:
+    """Seven stages, nodes listed stage by stage, stage 6 holding several nodes.
+
+    Mirrors the reference deck's own shape: nodes 0-6 are the seven stages'
+    first nodes in order, and every later node also belongs to stage 6.
+    """
+    manifest = _manifest(
+        (0, 1, 2, 3, 4, 5, 6, 7, 8, 9), (), stage_ids=(0, 1, 2, 3, 4, 5, 6, 6, 6, 6)
+    )
+    assert first_node_per_stage(manifest) == (1, 2, 3, 4, 5, 6, 7)
+
+
 def test_cut_building_pools_exclude_a_warm_start_only_pool(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -580,16 +660,30 @@ def test_a_non_ascii_digit_key_is_rejected(tmp_path: Path) -> None:
 # --- Finding 2: degenerate graphs raise rather than being narrowed ----------
 
 
-def _manifest(nodes: tuple[int, ...], edges: tuple[tuple[int, int], ...]) -> PolicyManifest:
+def _manifest(
+    nodes: tuple[int, ...],
+    edges: tuple[tuple[int, int], ...],
+    stage_ids: tuple[int, ...] | None = None,
+) -> PolicyManifest:
+    """Build a synthetic manifest; `stage_ids` defaults to `stage_id = id`.
+
+    `num_stages` follows `stage_ids`' own distinct count when given, so a
+    caller stating an interleaved or gapped stage order does not have to state
+    `num_stages` separately and get the two out of sync by hand.
+    """
+    stages = stage_ids if stage_ids is not None else nodes
     return PolicyManifest(
         format_version=1,
         cobre_version="0.15.0",
         created_at="",
-        num_stages=len(nodes),
+        num_stages=len(set(stages)),
         n_pools=len(nodes),
         completed_iterations=1,
         cost_scale_factor=1e6,
-        nodes=tuple(ManifestNodeRecord(id=i, stage_id=i, pool_id=i) for i in nodes),
+        nodes=tuple(
+            ManifestNodeRecord(id=i, stage_id=s, pool_id=i)
+            for i, s in zip(nodes, stages, strict=True)
+        ),
         edges=tuple(
             ManifestEdgeRecord(source_id=s, target_id=t, probability=1.0) for s, t in edges
         ),

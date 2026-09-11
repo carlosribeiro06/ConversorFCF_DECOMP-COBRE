@@ -1,10 +1,12 @@
 """Revision and output-path resolution.
 
-Every function here is pure with respect to the filesystem apart from the two
-that deliberately inspect it: nothing in this module creates a directory or a
-file. Resolution has to stay side-effect free because a run refused for an
-existing artifact must leave nothing behind, and only the writers create
-directories.
+Every function here is pure with respect to the filesystem apart from the four
+that deliberately inspect it — `revision_from_case_dir` and `resolve_revision`
+resolve the case directory to read its name; `resolve_output_paths` and
+`assert_case_readable` resolve it to build and check paths — and nothing in
+this module creates a directory or a file. Resolution has to stay side-effect
+free because a run refused for an existing artifact must leave nothing behind,
+and only the writers create directories.
 
 The revision appears in two cases on disk, which is transcribed from the
 reference case rather than assumed: the case directory carries it upper case
@@ -50,12 +52,13 @@ def normalize_revision(text: str) -> str:
 
 def revision_from_case_dir(case_dir: Path) -> str | None:
     """The revision the case directory name carries, or `None` if it carries none."""
-    found: set[str] = {match.lower() for match in _CASE_REVISION.findall(case_dir.name.upper())}
+    resolved_name = case_dir.resolve().name
+    found: set[str] = {match.lower() for match in _CASE_REVISION.findall(resolved_name.upper())}
     if not found:
         return None
     if len(found) > 1:
         raise PathError(
-            f"the case directory name {case_dir.name!r} carries more than one revision "
+            f"the case directory name {resolved_name!r} carries more than one revision "
             f"({', '.join(sorted(found))}); pass --revision to say which one applies"
         )
     return found.pop()
@@ -67,13 +70,15 @@ def resolve_revision(case_dir: Path, declared: str | None) -> str:
     The cross-check is the point: deriving it silently would convert an RV1 case
     into a `mapcut.rv0` with nothing in the artifacts to show it happened, and
     requiring the flag alone would leave the same mistake possible in the other
-    direction.
+    direction. Resolved first, like every sibling helper here, so a symlink or a
+    relative `.` names the case it actually points at rather than its own name.
     """
+    resolved_name = case_dir.resolve().name
     derived = revision_from_case_dir(case_dir)
     if declared is None:
         if derived is None:
             raise PathError(
-                f"the case directory name {case_dir.name!r} carries no revision, so --revision is "
+                f"the case directory name {resolved_name!r} carries no revision, so --revision is "
                 f"required ({ACCEPTED_REVISIONS})"
             )
         _logger.info("revision %s derived from the case directory name", derived)
@@ -82,7 +87,7 @@ def resolve_revision(case_dir: Path, declared: str | None) -> str:
     normalized = normalize_revision(declared)
     if derived is not None and derived != normalized:
         raise PathError(
-            f"the case directory name {case_dir.name!r} says {derived!r} but --revision says "
+            f"the case directory name {resolved_name!r} says {derived!r} but --revision says "
             f"{normalized!r}; refusing to write {normalized} artifacts from a {derived} case"
         )
     return normalized

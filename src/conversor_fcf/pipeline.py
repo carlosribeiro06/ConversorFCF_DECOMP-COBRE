@@ -80,6 +80,7 @@ from conversor_fcf.decomp.cortdeco_writer import (
 from conversor_fcf.decomp.layout import (
     CutBlockOffsets,
     LayoutError,
+    assert_gnl_span_is_zero,
     assert_no_travel_time,
     assert_uniform_blocks,
     cortdeco_block_offsets,
@@ -96,6 +97,7 @@ from conversor_fcf.mapping.rules import (
     assert_gnl_lead_time_is_evidenced,
     cut_building_pools,
     discount_factors,
+    first_node_per_stage,
     inflow_lag_drop_audit,
     load_hydro_codes,
     submarket_for_bus,
@@ -114,12 +116,6 @@ _logger = get_logger("pipeline")
 
 MAPCUT_CONTENT_CSV_NAME = "mapcut_content.csv"
 CORTDECO_CONTENT_CSV_NAME = "cortdeco_content.csv"
-
-# The cross-check step's own label, named once so its `current_step`
-# assignment and its `log_step` call cannot drift apart. No longer the
-# unpublish trigger itself (Fix 1) - see `unvalidated_pair_published` in
-# `run_conversion`.
-_CROSS_CHECK_STEP = "cross-check the pair"
 
 _CUTS_SUBDIR = POLICY_MANIFEST_RELATIVE.parent / "cuts"
 
@@ -178,10 +174,6 @@ def assemble_mapcut_header(
     total_cuts = n_nodes * manifest.completed_iterations
     heads = cut_head_indices(total_cuts, n_nodes, node_count)
 
-    first_node_by_stage: dict[int, int] = {}
-    for node in manifest.nodes:
-        first_node_by_stage.setdefault(node.stage_id, node.id + 1)
-
     gnl = anticipated_thermals(inputs)
     assert_gnl_lead_time_is_evidenced(gnl)
     start = date.fromisoformat(inputs.stages[0].start_date)
@@ -205,7 +197,7 @@ def assemble_mapcut_header(
             for hydro in inputs.hydros
         ),
         indice_no_arvore=tree_indices(manifest),
-        indice_primeiro_no_estagio=tuple(first_node_by_stage.values()),
+        indice_primeiro_no_estagio=first_node_per_stage(manifest),
         patamares_por_estagio=tuple(len(stage.blocks) for stage in inputs.stages),
         registro_ultimo_corte_no=heads,
         codigos_submercados_gnl=tuple(submarket_for_bus(t.bus_id) for t in gnl),
@@ -266,6 +258,16 @@ def cross_check_pair(
     `cortdeco_block_offsets` — never the offsets `write_cortdeco` was handed —
     for the reason the module docstring records: reusing the writer's own
     offsets would make the check self-referential.
+
+    Those re-derived offsets also feed a second call to
+    `assert_gnl_span_is_zero`, on top of `write_cortdeco`'s own. The two are
+    different witnesses: the writer's runs on its own offsets, before its own
+    atomic rename; this one runs on the *published* pair, at offsets derived
+    independently of the writer, so a future divergence between the two
+    `cortdeco_block_offsets` call sites cannot mislabel a storage-slope column
+    as `pi_gnl` in `cortdeco_content.csv` without raising. Premise P14 stands
+    either way: the span is still expected to be all zero, and populating it
+    is `ticket-016`'s open problem, not this check's.
     """
     mapcut_contents = read_mapcut(mapcut_path)
     scalars = mapcut_contents.scalars
@@ -297,6 +299,8 @@ def cross_check_pair(
             f"cut_head_indices({scalars.numero_cortes}, {n_nodes}, {scalars.numero_cenarios}) = "
             f"{expected_heads[:n_nodes]}: the pair disagrees"
         )
+
+    assert_gnl_span_is_zero(cortdeco_path, cortdeco_contents.record_count, offsets)
 
     _logger.info(
         "cross-checked mapcut/cortdeco: numero_cortes=%d n_nodes=%d heads=%s",
@@ -523,7 +527,7 @@ def run_conversion(
                 cuts, paths.cortdeco, numero_cortes=header.numero_cortes, offsets=offsets
             )
 
-        current_step = _CROSS_CHECK_STEP
+        current_step = "cross-check the pair"
         with log_step(_logger, current_step):
             mapcut_contents, cortdeco_contents = cross_check_pair(paths.mapcut, paths.cortdeco)
             # Reached only on success: cross_check_pair raising leaves this

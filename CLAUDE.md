@@ -123,6 +123,39 @@ and do not "fix" code that looks wrong because it contradicts an intuition liste
   zeros), while the oracle's `pi_gnl` spans a 15% band. No scalar or affine map connects them, and
   the two artifacts come from independent runs, so their magnitudes say nothing about the unit
   convention. Never gate a validation check on cross-run GNL magnitude agreement.
+- `idecomp`'s `Cortdeco.read` needs `numero_total_cortes` as **cuts per node**, not the study total:
+  passed the total (288 in this project's case), it returns 1,729 rows, 1,440 of them all-zero `rhs`
+  padding, against 289 rows for the correct call. This is the same trap the mapcut-side note above
+  already records for a different symptom; here it is witnessed by an executed read.
+- An oracle `cortes` row maps to `read_cortdeco`'s `record_index` by
+  `record_index = n_nodes * indice_corte - no`; that mapping covers `range(record_count)` exactly,
+  with no gaps and no repeats.
+- `codigos_uhes_tempo_viagem` must be passed to `Cortdeco.read` as `[]`, never derived from
+  `Mapcut.lag_tempo_viagem_por_uhe`. With `n_utv = 0` that property's own slice degenerates to
+  `[-0:]`, which returns the whole trailing reg-6 array (19 values in this project's case) instead of
+  nothing, so deriving from it would build 19 phantom `pi_qdefp` columns and mislabel every GNL column
+  after them.
+- The reference deck's `cortdeco` magnitude envelopes are weak in opposite ways, measured rather than
+  assumed in `tests/integration/test_range_envelopes.py`. The `rhs` envelope is **one-sided**: it
+  catches a missed premise-P2 `/1000` (the emitted maximum, multiplied by 1000, lands three orders of
+  magnitude past the reference's 8.32e9 upper bound) but not a doubled one (divided by 1000 again, it
+  sits at ~2.29e6, comfortably inside). The `pi_varm` envelope is **non-discriminating**: multiplying
+  the emitted -15409.66..+9.99 band by 1000 still lies inside the reference's -5.03e7..+3.18e5 with
+  margin to spare. Neither envelope is a premise-P2 witness in the direction it fails to catch; that
+  witness is `tests/integration/test_cortdeco_assembly.py`'s independent
+  `piece.intercept / 1000.0` recomputation.
+- The published `cortdeco_content.csv` and the six `eco_cuts_pool_00{pool}.csv` files relate by
+  `record_index = n_nodes * rank + (n_nodes - 1) - node_index`: `node_index` is the position of a
+  file's pool id among the ascending pool ids of the ECO files found, not the pool id itself, and
+  `rank` is the 0-based position of a row among its own file's rows sorted ascending by
+  `iteration`, not the `iteration` value (which runs 1-48 in the reference case, not 0-47). In the
+  reference case this maps 288 ECO rows onto content records 0-287; the 289th, at `record_index`
+  288, is unmatched and repeats record 282 (pool 5's last cut) in every column from `rhs` onward,
+  under premise P13.
+- Premise P2's ÷1000 is exact between those two artifacts in only one direction: `content == eco /
+  1000.0` holds for every measured `rhs` and `pi_varm` value, while the inverted `content * 1000.0
+  == eco` fails for 643 of 48,672 `pi_varm` comparisons, because a float64 division is not exactly
+  invertible. Compare as `eco / 1000.0`; never multiply the content value back up.
 
 ## Git conventions
 

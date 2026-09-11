@@ -17,6 +17,7 @@ and both are load-bearing:
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 from collections import Counter
@@ -391,6 +392,62 @@ def tree_indices(manifest: PolicyManifest) -> tuple[int, ...]:
     if len(roots) != 1:
         raise MappingError(f"expected exactly one root node, found {len(roots)}: {roots[:8]}")
     return tuple(parents.get(node_id, node_id) + 1 for node_id in node_ids)
+
+
+def first_node_per_stage(manifest: PolicyManifest) -> tuple[int, ...]:
+    """DECOMP's 1-based first-node id per stage, ordered by `stage_id` ascending.
+
+    `indice_primeiro_no_estagio` is positional, so this must be ordered by
+    stage, not by node-list order: a manifest whose nodes interleave stages
+    would otherwise emit a scrambled per-stage array. "First" is the lowest
+    node id in that stage, which is what the reference deck's `(1..7)` anchors.
+
+    Node-id contiguity is asserted here, in `tree_indices`' own shape, rather
+    than inherited from it: a validation guarantee resting on the keyword-
+    argument evaluation order of some caller's constructor call (as in
+    `assemble_mapcut_header`, which happens to build `indice_no_arvore` first)
+    is not a guarantee. Reading `stage_id` in node-id order is meaningless
+    without it.
+
+    Two further, independent invariants are checked, because neither subsumes
+    the other. `stage_id`, read in node-id order, must be non-decreasing: a
+    stage axis only ever advances, so an interleaved or descending sequence
+    describes no representable case, and picking a "first" node under one
+    would silently emit a structurally valid, wrong tree — `(0, 1, 2, 0, 1,
+    2)` has no gap yet is not non-decreasing. And the sorted distinct
+    `stage_id` values must be the contiguous range `0..manifest.num_stages -
+    1`, because a gap or an out-of-range stage shifts every later entry —
+    `(0, 1, 3, 3)` is non-decreasing yet has a gap.
+    """
+    node_ids = [node.id for node in manifest.nodes]
+    if node_ids != list(range(len(node_ids))):
+        raise MappingError(
+            f"node ids must be the contiguous range 0..{len(node_ids) - 1} because they are "
+            f"written as 1-based positions; got {node_ids[:8]}..."
+        )
+
+    stage_sequence = [node.stage_id for node in manifest.nodes]
+    for previous_stage, next_stage in itertools.pairwise(stage_sequence):
+        if next_stage < previous_stage:
+            raise MappingError(
+                f"stage ids must be non-decreasing in node-id order because the stage axis only "
+                f"advances; got {stage_sequence[:8]}..."
+            )
+
+    first_by_stage: dict[int, int] = {}
+    for node in manifest.nodes:
+        current = first_by_stage.get(node.stage_id)
+        if current is None or node.id < current:
+            first_by_stage[node.stage_id] = node.id
+
+    observed = sorted(first_by_stage)
+    expected = list(range(manifest.num_stages))
+    if observed != expected:
+        raise MappingError(
+            f"stage ids must be the contiguous range 0..{manifest.num_stages - 1} because "
+            f"indice_primeiro_no_estagio is positional; got {observed}"
+        )
+    return tuple(first_by_stage[stage_id] + 1 for stage_id in observed)
 
 
 def cut_building_pools(

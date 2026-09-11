@@ -31,7 +31,9 @@ from conversor_fcf import pipeline as pipeline_module
 from conversor_fcf.cobre.inputs_reader import InputReadError
 from conversor_fcf.cobre.policy_reader import StageCutPool, nodes_by_pool, read_policy_manifest
 from conversor_fcf.config import Settings, load_settings
-from conversor_fcf.decomp.layout import RECORD_SIZE, TAMANHO_CORTE, LayoutError
+from conversor_fcf.decomp.cortdeco_writer import CutInput
+from conversor_fcf.decomp.cortdeco_writer import write_cortdeco as real_write_cortdeco
+from conversor_fcf.decomp.layout import RECORD_SIZE, TAMANHO_CORTE, CutBlockOffsets, LayoutError
 from conversor_fcf.decomp.mapcut_writer import MapcutHeader
 from conversor_fcf.decomp.mapcut_writer import write_mapcut as real_write_mapcut
 from conversor_fcf.decomp.reader import read_mapcut
@@ -353,6 +355,60 @@ def test_a_force_rerun_failing_after_the_mapcut_write_leaves_neither_published_n
     manifest = json.loads(paths_here.run_manifest.read_text(encoding="utf-8"))
     assert manifest["status"] == "failed"
     assert manifest["failed_step"] == "write cortdeco"
+
+
+def test_a_gnl_span_failure_from_a_real_run_unpublishes_both_artifacts(
+    tmp_path_factory: pytest.TempPathFactory, settings: Settings
+) -> None:
+    """Requirement 6: a real run whose *published* `cortdeco` carries a
+    non-zero `pi_gnl` byte must leave neither binary at its published name -
+    verified by listing the output directory, not only by catching the raised
+    exception (the epic-06 criterion that shipped without this check).
+
+    The byte is poked *after* the real writer's own rename: `write_cortdeco`'s
+    own `assert_gnl_span_is_zero` call runs on the temporary file before that
+    rename and cannot see a corruption introduced afterwards, so this failure
+    can only be caught by `cross_check_pair`'s independent, re-derived-offsets
+    call - the one this ticket adds.
+    """
+    output_root = tmp_path_factory.mktemp("gnl_span_reject") / "decomp_fcf"
+    paths_here = resolve_output_paths(REFERENCE_CASE, "rv0", settings, output_override=output_root)
+
+    def poking_write_cortdeco(
+        cuts: Sequence[Sequence[CutInput]],
+        path: Path,
+        *,
+        numero_cortes: int,
+        offsets: CutBlockOffsets,
+    ) -> int:
+        count = real_write_cortdeco(cuts, path, numero_cortes=numero_cortes, offsets=offsets)
+        raw = bytearray(path.read_bytes())
+        # Coefficient position 170 is this deck's own pi_gnl start under
+        # run_conversion's scalars (cortdeco_block_offsets' own docstring);
+        # this is record 0's first pi_gnl byte.
+        raw[4 + 8 * 170] = 1
+        path.write_bytes(bytes(raw))
+        return count
+
+    with (
+        mock.patch.object(pipeline_module, "write_cortdeco", side_effect=poking_write_cortdeco),
+        pytest.raises(LayoutError, match="pi_gnl"),
+    ):
+        run_conversion(REFERENCE_CASE, "rv0", paths_here, settings, include_terminal=False)
+
+    assert not paths_here.mapcut.exists(), "a rejected mapcut must not remain at its published name"
+    assert not paths_here.cortdeco.exists(), (
+        "a rejected cortdeco must not remain at its published name"
+    )
+
+    mapcut_rejected = paths_here.mapcut.with_name(paths_here.mapcut.name + ".rejected")
+    cortdeco_rejected = paths_here.cortdeco.with_name(paths_here.cortdeco.name + ".rejected")
+    assert mapcut_rejected.is_file()
+    assert cortdeco_rejected.is_file()
+
+    manifest = json.loads(paths_here.run_manifest.read_text(encoding="utf-8"))
+    assert manifest["status"] == "failed"
+    assert manifest["failed_step"] == "cross-check the pair"
 
 
 def test_a_first_run_failing_in_the_validation_window_logs_no_error_about_the_missing_cortdeco(

@@ -139,6 +139,94 @@ def test_an_agreeing_pair_returns_both_contents(tmp_path: Path) -> None:
     assert cortdeco_contents.numero_cortes == 6
 
 
+# --- the GNL span check on the re-derived offsets (ticket-018) -------------
+#
+# `cross_check_pair` re-derives `offsets` from the read-back mapcut and never
+# reuses `write_cortdeco`'s own; these three cases poke the published
+# `cortdeco` bytes directly, after a normal write, so the corruption is
+# something neither writer's own gate could have seen.
+
+
+def test_a_dirty_gnl_byte_is_refused_naming_the_record_slot_and_position(
+    tmp_path: Path,
+) -> None:
+    """Byte 36 of record 0 is `pi_gnl` slot 0's first byte (coefficient
+    position 4, from `_offsets`' `n_uhes=3`): overwriting it with `1` must be
+    caught by `cross_check_pair`'s own span check, not just `write_cortdeco`'s."""
+    mapcut_path = tmp_path / "mapcut.rv0"
+    cortdeco_path = tmp_path / "cortdeco.rv0"
+    write_mapcut(_header(), mapcut_path)
+
+    offsets = _offsets()
+    write_cortdeco(_cuts(3, 2, offsets), cortdeco_path, numero_cortes=6, offsets=offsets)
+
+    raw = bytearray(cortdeco_path.read_bytes())
+    raw[36] = 1
+    cortdeco_path.write_bytes(bytes(raw))
+
+    with pytest.raises(LayoutError, match="record 0") as error:
+        cross_check_pair(mapcut_path, cortdeco_path)
+    message = str(error.value)
+    assert "slot 0" in message
+    assert "coefficient position 4" in message
+
+
+def test_a_negative_zero_gnl_byte_is_refused_naming_byte_seven(tmp_path: Path) -> None:
+    """`-0.0`'s little-endian sign byte (`0x80`) at the slot's last byte must
+    be caught even though it compares numerically equal to zero."""
+    mapcut_path = tmp_path / "mapcut.rv0"
+    cortdeco_path = tmp_path / "cortdeco.rv0"
+    write_mapcut(_header(), mapcut_path)
+
+    offsets = _offsets()
+    write_cortdeco(_cuts(3, 2, offsets), cortdeco_path, numero_cortes=6, offsets=offsets)
+
+    raw = bytearray(cortdeco_path.read_bytes())
+    raw[36:44] = bytes.fromhex("0000000000000080")
+    cortdeco_path.write_bytes(bytes(raw))
+
+    with pytest.raises(LayoutError, match="record 0") as error:
+        cross_check_pair(mapcut_path, cortdeco_path)
+    message = str(error.value)
+    assert "byte 7" in message
+
+
+def test_a_call_site_offset_disagreement_mislabels_a_column_and_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Reconstructs the epic-06 finding this ticket closes: `cortdeco` is
+    written with `n_uhes=3` offsets (`pi_gnl` 4, `NCOEF` 5), but paired with a
+    `mapcut` declaring `numero_uhes=2`, so `cross_check_pair` re-derives
+    `pi_gnl` 3, `NCOEF` 4 - one slot into the real `pi_varm` block. Its third
+    value must be non-zero (7.0, never `_cuts`' 0.0) or the mislabelled read
+    would silently agree with zero too."""
+    mapcut_path = tmp_path / "mapcut.rv0"
+    cortdeco_path = tmp_path / "cortdeco.rv0"
+    write_mapcut(
+        _header(numero_uhes=2, codigos_uhes=(1, 2), codigos_uhes_jusante=(2, 0)), mapcut_path
+    )
+
+    written_offsets = _offsets()
+    assert written_offsets.pi_gnl == 4
+    assert written_offsets.ncoef == 5
+    pi_gnl = zeroed_gnl_block(written_offsets)
+    cuts = [
+        [
+            CutInput(
+                intercept=float(node * 1000 + iteration),
+                pi_varm=np.array([float(node), float(iteration), 7.0]),
+                pi_gnl=pi_gnl,
+            )
+            for iteration in range(2)
+        ]
+        for node in range(3)
+    ]
+    write_cortdeco(cuts, cortdeco_path, numero_cortes=6, offsets=written_offsets)
+
+    with pytest.raises(LayoutError, match="coefficient position 3"):
+        cross_check_pair(mapcut_path, cortdeco_path)
+
+
 # --- _reject_pair (Fix 1 / C6): the rename-failure branch -------------------
 #
 # The successful rename - both files present as `.rejected`, neither at its

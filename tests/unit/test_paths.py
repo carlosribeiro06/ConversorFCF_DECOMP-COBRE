@@ -127,6 +127,51 @@ def test_agreement_is_accepted() -> None:
     assert resolve_revision(Path(REFERENCE_CASE_NAME), "rv0") == "rv0"
 
 
+# --- ticket-019: resolve before reading the name ----------------------------
+
+
+def test_a_symlink_to_a_differently_revisioned_case_is_not_bypassed(tmp_path: Path) -> None:
+    """The cross-check `resolve_revision`'s docstring promises must reach the
+    directory the symlink points at, not the symlink's own unrevisioned name.
+    """
+    target = tmp_path / "DEC_ONS_052026_RV1_VE_CONVERTIDO"
+    target.mkdir()
+    link = tmp_path / "latest"
+    link.symlink_to(target)
+
+    with pytest.raises(PathError) as error:
+        resolve_revision(link, "rv0")
+    message = str(error.value)
+    assert "rv1" in message, "the resolved target's revision must be named"
+    assert "rv0" in message, "and the declared one"
+
+
+def test_the_working_directory_alone_resolves_its_own_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Path(".").name` is `''`; the resolved directory carries the revision."""
+    case = tmp_path / REFERENCE_CASE_NAME
+    case.mkdir()
+    monkeypatch.chdir(case)
+    assert resolve_revision(Path("."), None) == "rv0"
+
+
+def test_the_working_directory_without_a_revision_names_itself_not_the_dot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pitfall this fix exists to avoid: a raised message quoting `''`
+    instead of the resolved directory it actually refused.
+    """
+    case = tmp_path / "no_revision_here"
+    case.mkdir()
+    monkeypatch.chdir(case)
+    with pytest.raises(PathError) as error:
+        resolve_revision(Path("."), None)
+    message = str(error.value)
+    assert "no_revision_here" in message
+    assert "''" not in message
+
+
 # --- the output paths -------------------------------------------------------
 
 
