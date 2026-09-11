@@ -111,7 +111,7 @@ and do not "fix" code that looks wrong because it contradicts an intuition liste
   off `delivery_date`.
 - The **GNL lag month is not derivable** from the case, and premise P15 says so. Both anticipated
   thermals declare `lead_time_hours = 1608.0` while the reference deck declares `lag_meses_gnl =
-  (2, 2)`, and 1608 / 730.5 = 2.2013 — so `floor` and `round` both fit that single data point and
+  (2, 2)`, and 1608 / 730.5 = 2.2012 — so `floor` and `round` both fit that single data point and
   first diverge at 2.5 (any fractional part of 0.5 or more). With one point the mapping from lead
   time to lag month is undetermined, exactly like P14's reduction. `assert_gnl_lead_time_is_evidenced`
   therefore refuses any other lead time instead of converting it. Do not "fix" this by deriving a

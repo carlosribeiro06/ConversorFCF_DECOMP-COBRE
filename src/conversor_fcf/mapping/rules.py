@@ -54,7 +54,7 @@ SUBMARKET_COUNT = 5
 
 # Premise P15. The only `lead_time_hours` the lead-time-to-lag-month mapping is
 # evidenced for: the reference case's own two GNL plants both declare it, and
-# the reference deck declares lag_meses_gnl = (2, 2). 1608.0 / 730.5 = 2.2013;
+# the reference deck declares lag_meses_gnl = (2, 2). 1608.0 / 730.5 = 2.2012;
 # floor and round both give 2 at that single point and first diverge at 2.5
 # (any fractional part of 0.5 or more), so one point cannot decide between
 # them - see assert_gnl_lead_time_is_evidenced.

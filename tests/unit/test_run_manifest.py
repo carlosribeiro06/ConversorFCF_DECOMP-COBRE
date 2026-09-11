@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
@@ -8,6 +9,11 @@ import pytest
 from conversor_fcf import run_manifest as run_manifest_module
 from conversor_fcf.config import load_settings
 from conversor_fcf.decomp import layout
+from conversor_fcf.mapping.rules import (
+    DAYS_PER_YEAR,
+    EVIDENCED_GNL_LAG_MESES,
+    EVIDENCED_GNL_LEAD_TIME_HOURS,
+)
 from conversor_fcf.run_manifest import (
     PREMISES,
     build_run_manifest,
@@ -57,6 +63,26 @@ def test_premise_fifteen_names_the_evidenced_lead_time_and_both_candidate_formul
     assert "1608.0" in p15, "the one evidenced lead time"
     assert "floor" in p15 and "round" in p15, "both candidate formulas must be named"
     assert "2.5" in p15, "where the two formulas would diverge"
+
+
+def test_premise_fifteen_prints_the_quotient_it_actually_claims() -> None:
+    """Recomputed from the named constants, never read back from the prose.
+
+    Every other P15 assertion guards a claim and none guarded the arithmetic,
+    which is how a wrong fifth digit reached committed source.
+    """
+    p15 = next(entry for entry in PREMISES if entry.startswith("P15:"))
+    hours_per_month = DAYS_PER_YEAR * 24.0 / 12.0
+    assert f"{hours_per_month:g}" in p15, "the month length the quotient divides by"
+    quotient = EVIDENCED_GNL_LEAD_TIME_HOURS / hours_per_month
+    assert f"{quotient:.4f}" in p15, "the quotient, to the digits the premise prints"
+
+
+def test_both_candidate_formulas_map_the_evidenced_point_to_the_declared_lag() -> None:
+    """P15 rests on floor and round agreeing at 1608.0. Check that, not the wording."""
+    quotient = EVIDENCED_GNL_LEAD_TIME_HOURS / (DAYS_PER_YEAR * 24.0 / 12.0)
+    assert math.floor(quotient) == EVIDENCED_GNL_LAG_MESES
+    assert round(quotient) == EVIDENCED_GNL_LAG_MESES
 
 
 def test_premise_eleven_names_every_zero_filled_reg_ten_field() -> None:

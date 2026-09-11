@@ -112,7 +112,7 @@ _P14 = (
 
 _P15 = (
     "P15: mapcut reg 9's lag_meses_gnl emitted as 2 for every GNL plant. Evidenced only for the "
-    "reference case's own lead_time_hours of 1608.0 (1608.0/730.5 = 2.2013): floor and round "
+    "reference case's own lead_time_hours of 1608.0 (1608.0/730.5 = 2.2012): floor and round "
     "both map that single known point to 2, and the two formulas first diverge at 2.5 (any "
     "fractional part of 0.5 or more), so one evidenced point cannot decide between them. "
     "Guessing either would repeat the error premise P14 exists to avoid. "
