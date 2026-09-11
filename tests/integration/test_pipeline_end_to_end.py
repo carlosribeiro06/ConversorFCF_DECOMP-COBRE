@@ -31,6 +31,7 @@ from conversor_fcf import pipeline as pipeline_module
 from conversor_fcf.cobre.inputs_reader import InputReadError
 from conversor_fcf.cobre.policy_reader import StageCutPool, nodes_by_pool, read_policy_manifest
 from conversor_fcf.config import Settings, load_settings
+from conversor_fcf.decomp import mapcut_writer as mapcut_writer_module
 from conversor_fcf.decomp.cortdeco_writer import CutInput
 from conversor_fcf.decomp.cortdeco_writer import write_cortdeco as real_write_cortdeco
 from conversor_fcf.decomp.layout import RECORD_SIZE, TAMANHO_CORTE, CutBlockOffsets, LayoutError
@@ -632,3 +633,82 @@ def test_the_console_script_runs_end_to_end_as_a_subprocess(tmp_path: Path) -> N
 
     manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "ok"
+
+
+def test_every_trunk_pool_carries_the_same_entity_manifest_axes(
+    manifest_pool_ids: tuple[int, ...],
+) -> None:
+    """The structural-identity claim `assemble_mapcut_header` rests on, now enforced.
+
+    That function receives ONE trunk pool's slots and its docstring justifies
+    it with "they are structurally identical". The plan-closing review found
+    nothing checking that, while Cobre state axes demonstrably do vary per
+    pool in this very deck - only the terminal pool carries inflow-lag slots.
+    So a future case whose `HydroTransitBucket` state appeared in a later
+    trunk pool would have been read from a pool nobody inspected.
+    `run_conversion` now calls `assert_no_travel_time` on every trunk pool;
+    this pins the wider claim that one pool may stand for all of them.
+    """
+    trunk_ids = manifest_pool_ids[:-1]
+    pools = load_pools(REFERENCE_CASE, manifest_pool_ids, False)
+
+    axes = {
+        pool_id: tuple(
+            (slot.entity_type, slot.entity_id, slot.subindex) for slot in pools[pool_id].slots
+        )
+        for pool_id in trunk_ids
+    }
+    first = axes[trunk_ids[0]]
+    assert len(first) == 183, "the reference deck's trunk pools each carry 183 slots"
+    for pool_id in trunk_ids[1:]:
+        assert axes[pool_id] == first, (
+            f"pool {pool_id} carries different entity-manifest axes than pool {trunk_ids[0]}, so "
+            "one pool can no longer stand for all of them in assemble_mapcut_header"
+        )
+
+
+def test_a_force_rerun_failing_inside_write_mapcut_after_the_rename_publishes_neither(
+    tmp_path_factory: pytest.TempPathFactory, settings: Settings
+) -> None:
+    """The one line Fix 1 turns on, which no test pinned until the plan-closing review.
+
+    `unvalidated_pair_published` is set BEFORE `write_mapcut` is called rather
+    than after it returns, and the module docstring spends thirty lines and
+    the README a paragraph on why. Nothing tested it: moving the assignment
+    after the `write_mapcut` block left all 638 tests green, because the
+    existing force-rerun test fails *after* `write_mapcut` returns, which the
+    moved placement also catches.
+
+    This is the case that separates them. `write_mapcut` does
+    `os.replace(temporary, path)` and only then `sync_directory(path.parent)`,
+    both inside its own `try`, so an `OSError` from that fsync propagates with
+    run 2's mapcut ALREADY sitting at the published name. With the flag set
+    beforehand `_reject_pair` fires; with it set afterwards it never runs, and
+    run 2's fresh mapcut is left beside run 1's stale cortdeco - the
+    uncross-checked mixed pair, at both published names, that the README says
+    cannot happen.
+    """
+    output_root = tmp_path_factory.mktemp("force_rerun_sync") / "decomp_fcf"
+    paths_here = resolve_output_paths(REFERENCE_CASE, "rv0", settings, output_override=output_root)
+
+    # Run 1: real and successful, so both published names hold a validated pair.
+    assert run_conversion(REFERENCE_CASE, "rv0", paths_here, settings, include_terminal=False) == 0
+    run1_cortdeco = paths_here.cortdeco.read_bytes()
+
+    def failing_sync(_path: Path) -> None:
+        raise OSError("simulated fsync failure after the rename")
+
+    with (
+        mock.patch.object(mapcut_writer_module, "sync_directory", side_effect=failing_sync),
+        pytest.raises(OSError, match="simulated fsync failure"),
+    ):
+        run_conversion(REFERENCE_CASE, "rv0", paths_here, settings, include_terminal=False)
+
+    assert not paths_here.mapcut.exists(), "run 2's already-renamed mapcut must not stay published"
+    assert not paths_here.cortdeco.exists(), "run 1's stale cortdeco must not stay published"
+
+    mapcut_rejected = paths_here.mapcut.with_name(paths_here.mapcut.name + ".rejected")
+    cortdeco_rejected = paths_here.cortdeco.with_name(paths_here.cortdeco.name + ".rejected")
+    assert mapcut_rejected.is_file(), "run 2's mapcut is preserved, not deleted"
+    assert cortdeco_rejected.is_file()
+    assert cortdeco_rejected.read_bytes() == run1_cortdeco

@@ -58,12 +58,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
-from datetime import date
 from pathlib import Path
 
 from conversor_fcf.cobre.inputs_reader import CaseInputs, anticipated_thermals, read_case_inputs
 from conversor_fcf.cobre.policy_reader import (
     EntitySlotRecord,
+    PolicyFormatError,
     PolicyManifest,
     StageCutPool,
     nodes_by_pool,
@@ -100,6 +100,7 @@ from conversor_fcf.mapping.rules import (
     first_node_per_stage,
     inflow_lag_drop_audit,
     load_hydro_codes,
+    parse_start_date,
     submarket_for_bus,
     tree_indices,
 )
@@ -124,6 +125,21 @@ def _cuts_path(case_dir: Path, pool_id: int) -> Path:
     return case_dir / _CUTS_SUBDIR / f"{pool_id:03d}.bin"
 
 
+def assert_pools_declared(pool_ids: Sequence[int]) -> None:
+    """Refuse a manifest that declares no cut pools at all.
+
+    Every consumer of `nodes_by_pool` takes `pool_ids[-1]` as the terminal
+    pool, which raises a bare `IndexError` on an empty manifest - a class
+    `cli._EXIT_CODES` does not map, so it would escape `main` as a traceback
+    at exit 1 instead of a named failure.
+    """
+    if not pool_ids:
+        raise PolicyFormatError(
+            "the policy manifest declares no nodes, so the checkpoint carries no cut pools: "
+            "there is no terminal pool to exclude and no trunk to convert"
+        )
+
+
 def load_pools(
     case_dir: Path, pool_ids: Sequence[int], include_terminal: bool
 ) -> dict[int, StageCutPool]:
@@ -136,6 +152,7 @@ def load_pools(
     `include_terminal=True` branch is testable on its own, without paying for
     the ECO CSV write that also follows from that flag in a full run.
     """
+    assert_pools_declared(pool_ids)
     terminal_pool_id = pool_ids[-1]
     structural_trunk_ids = pool_ids[:-1]
     pools: dict[int, StageCutPool] = {
@@ -176,7 +193,7 @@ def assemble_mapcut_header(
 
     gnl = anticipated_thermals(inputs)
     assert_gnl_lead_time_is_evidenced(gnl)
-    start = date.fromisoformat(inputs.stages[0].start_date)
+    start = parse_start_date(inputs.stages[0])
     return MapcutHeader(
         numero_iteracoes=manifest.completed_iterations,
         numero_cortes=total_cuts,
@@ -439,6 +456,7 @@ def run_conversion(
         current_step = "read the trunk pools"
         with log_step(_logger, current_step):
             pool_ids = sorted(nodes_by_pool(manifest))
+            assert_pools_declared(pool_ids)
             terminal_pool_id = pool_ids[-1]
             structural_trunk_ids = pool_ids[:-1]
             pools = load_pools(case_dir, pool_ids, include_terminal)
@@ -467,6 +485,18 @@ def run_conversion(
                     "cuts, so there is no FCF to convert"
                 )
             trunk_pools = {pool_id: pools[pool_id] for pool_id in trunk_pool_ids}
+            # Premise P3 on EVERY trunk pool, not just the one whose slots
+            # reach `assemble_mapcut_header`. The pools are structurally
+            # identical in this deck - all six carry the same 183 slots and
+            # the same (entity_type, entity_id, subindex) tuples, differing
+            # only in delivery_date - but nothing enforced that, and Cobre
+            # state axes do vary per pool here: only the terminal pool carries
+            # inflow-lag slots. A future case whose HydroTransitBucket state
+            # appeared in a later trunk pool would have converted with
+            # n_utv = 0 and no trace, which is the exact outcome
+            # `assert_no_travel_time` exists to refuse.
+            for pool in trunk_pools.values():
+                assert_no_travel_time(pool.slots)
             inflow_lag_drop_audit(trunk_pools)
 
         current_step = "emit the ECO CSVs"

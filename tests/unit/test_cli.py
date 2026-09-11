@@ -11,6 +11,7 @@ override a settings file saying true - the one defect here that would silently
 change what a run converts rather than failing.
 """
 
+import ast
 import json
 import logging
 import runpy
@@ -424,3 +425,101 @@ def test_the_seam_logs_the_resolved_plan_before_the_real_pipeline_runs(
     manifest = json.loads((output_root / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "failed"
     assert manifest["failed_step"] == "read settings-derived inputs"
+
+
+# --- the converse of the exit-code map: nothing unclassified may be raised ---
+
+
+# Every (class, module) pair under `src/conversor_fcf` that raises something
+# NOT in `cli._HANDLED`. Each is either outside the seam or provably
+# unreachable through it; anything new fails the ratchet below by name.
+_UNCLASSIFIED_RAISES_ALLOWED: frozenset[tuple[str, str]] = frozenset(
+    {
+        # argparse's own exit, and `main`'s re-raise of it. Not a conversion
+        # failure and deliberately not in the map: argparse owns code 2.
+        ("SystemExit", "src/conversor_fcf/cli.py"),
+        # Both compare two widths derived from the SAME read-back `mapcut`
+        # scalars, so no conforming case can reach them; `read_stage_cuts`
+        # converts a coefficient/manifest length mismatch into
+        # `PolicyFormatError` before the second could fire. Defence in depth,
+        # not an escape path.
+        ("ValueError", "src/conversor_fcf/reporting/content_csv.py"),
+        ("ValueError", "src/conversor_fcf/reporting/eco_csv.py"),
+    }
+)
+
+
+def _raised_classes(root: Path) -> set[tuple[str, str]]:
+    """Every `(class name, posix path)` raised with an explicit exception under `root`.
+
+    A bare `raise` re-raises whatever is already in flight and carries no
+    class of its own, so it is skipped.
+    """
+    repo_root = Path(cli.__file__).resolve().parents[2]
+    raised: set[tuple[str, str]] = set()
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Raise) or node.exc is None:
+                continue
+            called = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+            name = called.id if isinstance(called, ast.Name) else getattr(called, "attr", None)
+            if name is not None:
+                raised.add((name, path.relative_to(repo_root).as_posix()))
+    return raised
+
+
+def test_no_module_raises_a_class_the_exit_code_map_does_not_handle() -> None:
+    """The converse of `test_every_declared_exit_code_is_reachable_and_logged`.
+
+    That test proves every *declared* class maps to its code; this one proves
+    no module raises a class the map omits, which would escape `main` as a
+    traceback at exit 1 and break the contract (ticket-011 A1) an official
+    wrapper branches on.
+
+    **What this does NOT cover.** It reads `raise` statements, so it sees only
+    exceptions this package raises *explicitly*. The defect that motivated it
+    was an *implicit* `ValueError` out of `date.fromisoformat` in
+    `assemble_mapcut_header` - a library call, not a `raise`, and invisible
+    here. No static check can enumerate what the standard library may raise;
+    that half is covered by
+    `test_pipeline.py::test_a_malformed_start_date_is_a_named_mapping_failure`
+    and by routing such calls through guarded parsers. This ratchet stops the
+    class from being *widened* by new code; it did not and could not catch the
+    original.
+    """
+    handled = {kind.__name__ for kind in cli._HANDLED}
+    source_root = Path(cli.__file__).resolve().parent
+    unclassified = {
+        (name, path) for name, path in _raised_classes(source_root) if name not in handled
+    }
+
+    unexpected = unclassified - _UNCLASSIFIED_RAISES_ALLOWED
+    assert not unexpected, (
+        "raise(s) of a class cli._EXIT_CODES does not map, which would escape main as a "
+        f"traceback at exit 1: {sorted(unexpected)}"
+    )
+
+    stale = _UNCLASSIFIED_RAISES_ALLOWED - unclassified
+    assert not stale, f"no longer raised, remove from the allowlist: {sorted(stale)}"
+
+
+def test_date_parsing_happens_only_inside_the_guarded_parser() -> None:
+    """The ratchet that WOULD have caught the original defect.
+
+    `date.fromisoformat` raises `ValueError`, a class the exit-code map does
+    not carry, so every call must go through `mapping.rules.parse_start_date`,
+    which converts it to `MappingError`. A second call site anywhere else
+    re-opens the hole, and being a library call rather than a `raise` it is
+    invisible to the allowlist ratchet above - so it is pinned by name here.
+    """
+    source_root = Path(cli.__file__).resolve().parent
+    callers = {
+        path.relative_to(source_root.parents[1]).as_posix()
+        for path in sorted(source_root.rglob("*.py"))
+        if "fromisoformat" in path.read_text(encoding="utf-8")
+    }
+    assert callers == {"src/conversor_fcf/mapping/rules.py"}, (
+        "date.fromisoformat must be called only inside parse_start_date, which converts its "
+        f"ValueError into MappingError; also found in: {sorted(callers - {'src/conversor_fcf/mapping/rules.py'})}"
+    )

@@ -316,7 +316,7 @@ def delivery_slot_map(slots: Sequence[EntitySlotRecord]) -> dict[int, DeliveryGr
     }
 
 
-def _parse_start_date(stage: StageInfo) -> date:
+def parse_start_date(stage: StageInfo) -> date:
     try:
         return date.fromisoformat(stage.start_date)
     except ValueError as exc:
@@ -337,10 +337,10 @@ def discount_factors(stages: Sequence[StageInfo], annual_rate: float) -> tuple[f
     if annual_rate <= -1.0:
         raise MappingError(f"annual discount rate must exceed -1, got {annual_rate}")
 
-    origin = _parse_start_date(stages[0])
+    origin = parse_start_date(stages[0])
     factors = []
     for stage in stages:
-        elapsed_days = (_parse_start_date(stage) - origin).days
+        elapsed_days = (parse_start_date(stage) - origin).days
         if elapsed_days < 0:
             raise MappingError(
                 f"stage {stage.id} starts {abs(elapsed_days)} days before stage 0; "

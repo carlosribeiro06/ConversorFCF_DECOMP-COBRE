@@ -1,6 +1,7 @@
 import json
 import logging
 from collections.abc import Iterator, Sequence
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,7 @@ from conversor_fcf.mapping.rules import (
     load_hydro_codes,
     negate_gnl,
     negate_gnl_array,
+    parse_start_date,
     select_submarket_buses,
     submarket_for_bus,
     to_decomp_cost,
@@ -768,3 +770,24 @@ def test_cut_building_pools_of_an_empty_mapping_is_empty(
     with caplog.at_level(logging.WARNING, logger="conversor_fcf"):
         assert cut_building_pools({}) == ()
     assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+
+# --- the guarded start-date parser -------------------------------------------
+
+
+def test_a_well_formed_start_date_parses() -> None:
+    assert parse_start_date(_stage(0, "2026-04-25", "2026-05-02", (24.0,))) == date(2026, 4, 25)
+
+
+def test_a_malformed_start_date_is_a_named_mapping_failure() -> None:
+    """The error class is the point, not the message.
+
+    `date.fromisoformat` raises `ValueError`, which `cli._EXIT_CODES` does not
+    map, so it would escape `main` as a traceback at exit 1 rather than as a
+    classified failure. This parser exists to convert it, and until the
+    plan-closing review nothing tested that it does - while
+    `assemble_mapcut_header` called `date.fromisoformat` directly, bypassing
+    it entirely, for five epics.
+    """
+    with pytest.raises(MappingError, match="is not ISO-8601"):
+        parse_start_date(_stage(3, "2026/04/25", "2026-05-02", (24.0,)))

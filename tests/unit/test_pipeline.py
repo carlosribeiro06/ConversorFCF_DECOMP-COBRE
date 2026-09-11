@@ -26,6 +26,13 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+from conversor_fcf.cobre.entities import DELIVERY_DATE_SENTINEL, EntityType
+from conversor_fcf.cobre.policy_reader import (
+    AffinePieceRecord,
+    EntitySlotRecord,
+    PolicyFormatError,
+    StageCutPool,
+)
 from conversor_fcf.decomp.cortdeco_writer import CutInput, write_cortdeco, zeroed_gnl_block
 from conversor_fcf.decomp.layout import (
     CutBlockOffsets,
@@ -35,7 +42,12 @@ from conversor_fcf.decomp.layout import (
 )
 from conversor_fcf.decomp.mapcut_writer import MapcutHeader, write_mapcut
 from conversor_fcf.paths import OutputPaths
-from conversor_fcf.pipeline import _reject_pair, cross_check_pair
+from conversor_fcf.pipeline import (
+    _reject_pair,
+    assemble_cut_inputs,
+    assert_pools_declared,
+    cross_check_pair,
+)
 
 _N_UHES = 3
 _N_SBM_GNL = 1
@@ -285,3 +297,79 @@ def test_a_rename_failure_is_logged_not_raised_and_the_second_file_is_still_atte
     assert not cortdeco_path.exists(), "the second file's rename must still be attempted"
     assert (tmp_path / "cortdeco.rv0.rejected").exists()
     assert any("failed to rename" in record.getMessage() for record in caplog.records)
+
+
+# --- the declared-pool guard (the plan-closing review, finding 1) -----------
+
+
+def test_a_manifest_declaring_pools_is_accepted() -> None:
+    assert_pools_declared([0, 1, 2])  # must not raise
+
+
+def test_a_manifest_declaring_no_pools_is_a_named_input_failure() -> None:
+    """A bare IndexError here would escape main as a traceback at exit 1.
+
+    Both consumers of nodes_by_pool take pool_ids[-1] as the terminal pool.
+    IndexError is in no cli._EXIT_CODES entry, so an empty manifest produced
+    an unclassified crash rather than one of the codes an official wrapper
+    branches on.
+    """
+    with pytest.raises(PolicyFormatError, match="declares no nodes"):
+        assert_pools_declared([])
+
+
+# --- the iteration sort (the plan-closing review, finding 4) ----------------
+
+
+def _storage_slot(entity_id: int) -> EntitySlotRecord:
+    return EntitySlotRecord(
+        entity_type=int(EntityType.HYDRO_STORAGE),
+        entity_id=entity_id,
+        subindex=0,
+        was_active=True,
+        delivery_date=DELIVERY_DATE_SENTINEL,
+    )
+
+
+def _piece(iteration: int, intercept: float) -> AffinePieceRecord:
+    return AffinePieceRecord(
+        piece_id=iteration,
+        slot_index=0,
+        iteration=iteration,
+        forward_pass_index=0,
+        intercept=intercept,
+        coefficients=np.array([float(iteration)], dtype=np.float64),
+        is_active=True,
+    )
+
+
+def test_cut_inputs_are_ordered_by_iteration_whatever_order_the_pool_holds() -> None:
+    """The documented mitigation that no test pinned until the plan-closing review.
+
+    `assemble_cut_inputs` sorts each pool's pieces by `iteration` because
+    nothing in `read_stage_cuts`'s contract guarantees the array order, and an
+    out-of-order chain would silently misplace which cut sits at which depth.
+    The reference deck cannot witness it - its pieces are already ascending -
+    so deleting the sort left all 638 tests green. A reversed pool is the
+    counterfactual the deck cannot supply.
+    """
+    pool = StageCutPool(
+        stage_id=0,
+        node_id=0,
+        graph_stage_id=0,
+        state_dimension=2211,
+        capacity=100,
+        warm_start_count=0,
+        populated_count=3,
+        cost_scale_factor=1000.0,
+        slots=(_storage_slot(0),),
+        pieces=(_piece(2, 200.0), _piece(0, 0.0), _piece(1, 100.0)),
+        active_cut_indices=(),
+    )
+    offsets = cortdeco_block_offsets(
+        n_uhes=1, n_utv=0, max_lag=0, n_sbm_gnl=2, n_estagios=1, n_patamares=3
+    )
+
+    cuts = assemble_cut_inputs({0: pool}, [0], [10], offsets)
+
+    assert [cut.intercept for cut in cuts[0]] == [0.0, 100.0, 200.0]
