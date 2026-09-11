@@ -25,6 +25,7 @@ import csv
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
+from conversor_fcf.decomp.layout import PHYSICAL_RECORD_FIRST, PHYSICAL_RECORD_LAST
 from conversor_fcf.decomp.reader import CortdecoContents, MapcutContents
 from conversor_fcf.logging_setup import get_logger
 
@@ -82,7 +83,7 @@ def _mapcut_rows(contents: MapcutContents) -> Iterator[tuple[object, ...]]:
     # Premise P1's span appears as rows rather than as an absence, so the
     # divergence is visible in the artifact instead of having to be inferred.
     nonzero = set(contents.physical_span_nonzero_records)
-    for index in range(4, 18):
+    for index in range(PHYSICAL_RECORD_FIRST, PHYSICAL_RECORD_LAST + 1):
         yield (index, "physical_p1", 1, "nonzero_bytes_found", 0, 1 if index in nonzero else 0)
 
     tree_record = 18

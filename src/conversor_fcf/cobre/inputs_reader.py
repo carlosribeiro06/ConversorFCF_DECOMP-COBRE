@@ -76,7 +76,7 @@ class ThermalInfo:
 
 @dataclass(frozen=True)
 class BusInfo:
-    """One electrical bus, which maps to a DECOMP submarket in `ticket-006`."""
+    """One electrical bus; `mapping.rules.submarket_for_bus` maps it to a submarket."""
 
     id: int
     name: str

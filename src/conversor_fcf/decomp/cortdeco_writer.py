@@ -3,9 +3,9 @@
 `idecomp.Cortdeco.cortes` has a no-op setter, so every byte here is written
 natively, exactly as in `mapcut_writer`. One record is: an int32 chain pointer
 at offset 0, then `NCOEF` float64 in block order `rhs | pi_varm | pi_gnl`, then
-zero padding to `TAMANHO_CORTE`. This module owns that one record; `ticket-010`
-owns the pointer's value, the record order, the extra trailing record and the
-whole file.
+zero padding to `TAMANHO_CORTE`. `serialize_cut` owns that one record;
+`write_cortdeco` owns the pointer values, the record order, the extra trailing
+record and the whole file.
 
 `CutInput.pi_varm` and `pi_gnl` are already placed in `CutBlockOffsets`' block
 order, in Cobre's raw sign and units. `storage_coefficients` below extracts the
